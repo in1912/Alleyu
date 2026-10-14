@@ -10,7 +10,7 @@ const r = express.Router();
 function guideOut(g) {
   return {
     id: g.id, title: g.title, destination: g.destination, days: g.days, status: g.status,
-    error: g.error, model: g.model, created_at: g.created_at, updated_at: g.updated_at,
+    stage: g.stage || '', error: g.error, model: g.model, created_at: g.created_at, updated_at: g.updated_at,
     content_len: g.content ? g.content.length : 0,
     images: JSON.parse(g.images_json || '[]'),
   };
@@ -100,16 +100,29 @@ r.get('/:id/stream', (req, res) => {
     'X-Accel-Buffering': 'no',
   });
   const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  let sent = 0;
+  // 内容基线协议（v1.4.0）：believed = 认为客户端手上已有的精确内容。
+  //  - 正文追加（正常流式）→ delta 推增量；
+  //  - 内容被改写（enrich 会在顶部插封面地图=前插，非追加）或本连接首拍/断线重连 → reset 推全文快照。
+  // 旧纯 slice(sent) 协议在前插场景会把中段文本当增量推出、封面永远到不了前端，重连还会整篇重复。
+  let believed = null;
+  let sentStage = null;
   let closed = false;
   const tick = () => {
     if (closed) return;
     const g = db.prepare('SELECT * FROM guides WHERE id=?').get(Number(req.params.id));
     if (!g) { send('error', { error: '攻略已被删除' }); return end(); }
-    if (g.content && g.content.length > sent) {
-      send('delta', { text: g.content.slice(sent) });
-      sent = g.content.length;
+    // 阶段事件（v1.4.0 进度条数据源）：阶段变化才推，断线重连首拍也会补当前阶段
+    if (g.stage && g.stage !== sentStage) {
+      sentStage = g.stage;
+      send('stage', { stage: g.stage, content_len: g.content ? g.content.length : 0 });
     }
+    const c = g.content || '';
+    if (believed === null || !c.startsWith(believed)) {
+      send('reset', { text: c });
+    } else if (c.length > believed.length) {
+      send('delta', { text: c.slice(believed.length) });
+    }
+    believed = c;
     if (g.status === 'done') {
       send('done', { id: g.id, images: JSON.parse(g.images_json || '[]'), content_len: g.content.length });
       return end();

@@ -99,9 +99,14 @@ ${FRAMEWORK}`;
 function generateGuide(guideId) {
   run(guideId).catch((e) => {
     try {
-      db.prepare("UPDATE guides SET status='error', error=?, updated_at=datetime('now','localtime') WHERE id=?").run(String(e.message || e), guideId);
+      db.prepare("UPDATE guides SET status='error', error=?, stage='', updated_at=datetime('now','localtime') WHERE id=?").run(String(e.message || e), guideId);
     } catch { /* 最后兜底也失败则无能为力 */ }
   });
+}
+
+// 阶段落库（进度条数据源；失败不影响生成主流程）
+function setStage(guideId, stage) {
+  try { db.prepare('UPDATE guides SET stage=? WHERE id=?').run(stage, guideId); } catch { /* 忽略 */ }
 }
 
 async function run(guideId) {
@@ -115,6 +120,7 @@ async function run(guideId) {
   }
 
   // 天气上下文（生成前抓一次，流式期间与增强共用）
+  setStage(guideId, 'weather');
   const weatherCtx = await weather.buildWeatherContext({
     lat: params._lat, lng: params._lng, startDate: params.startDate, endDate: params.endDate,
     month: params.month,
@@ -122,8 +128,11 @@ async function run(guideId) {
 
   db.prepare("UPDATE guides SET status='generating', model=?, updated_at=datetime('now','localtime') WHERE id=?")
     .run(cfg.model, guideId);
+  setStage(guideId, 'connect');
 
-  // 流式生成，增量节流落库
+  // 流式生成，增量节流落库。
+  // v1.4.0：空流自动重试（最多 3 次）——兼容网关偶发「首连即断/只回 DONE」的抽风，
+  // 用户实测「再点一次就好」= 纯偶发，不该让人看到红字去手点重试。
   let content = '';
   let lastSave = Date.now();
   const save = (force) => {
@@ -132,14 +141,33 @@ async function run(guideId) {
     lastSave = now;
     db.prepare("UPDATE guides SET content=?, updated_at=datetime('now','localtime') WHERE id=?").run(content, guideId);
   };
-  for await (const delta of ai.streamChat(cfg, buildMessages(params, weatherCtx), { maxTokens: 9000 })) {
-    content += delta;
-    save(false);
+  let streamErr = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    streamErr = null;
+    content = '';
+    try {
+      let first = true;
+      for await (const delta of ai.streamChat(cfg, buildMessages(params, weatherCtx), { maxTokens: 9000 })) {
+        if (first) { first = false; setStage(guideId, 'write'); }
+        content += delta;
+        save(false);
+      }
+    } catch (e) { streamErr = e; }
+    if (streamErr && content.trim()) throw streamErr; // 半途断流：内容不完整仍按失败处理
+    if (content.trim()) break;
+    if (attempt < 3) {
+      setStage(guideId, 'retry' + (attempt + 1));
+      console.warn(`[guide ${guideId}] AI 空返回（第 ${attempt} 次），1-2 秒后自动重试`);
+      await new Promise((r) => setTimeout(r, 1000 * attempt));
+    }
   }
   save(true);
-  if (!content.trim()) throw new Error('AI 返回了空内容（请检查模型名是否正确）');
+  if (!content.trim()) {
+    throw streamErr || new Error('AI 返回了空内容（已自动重试 3 次仍为空；多为服务端/网关偶发，请稍后再试）');
+  }
 
   // 图文增强（每步独立容错）
+  setStage(guideId, 'enrich:准备图文增强');
   const enrichResult = await enrichGuide(guideId, params, content, weatherCtx).catch((e) => {
     console.warn('[guide] 增强失败（不影响攻略）:', e.message);
     return { content, images: [] };
@@ -148,7 +176,7 @@ async function run(guideId) {
   // 生成来源页脚：无论增强成败都固定追加（每篇攻略都要交代内容和数据从哪来）
   const finalContent = enrichResult.content + sourceFooter(cfg);
 
-  db.prepare("UPDATE guides SET content=?, images_json=?, status='done', error='', updated_at=datetime('now','localtime') WHERE id=?")
+  db.prepare("UPDATE guides SET content=?, images_json=?, status='done', error='', stage='', updated_at=datetime('now','localtime') WHERE id=?")
     .run(finalContent, JSON.stringify(enrichResult.images), guideId);
 }
 
@@ -280,6 +308,7 @@ async function enrichGuide(guideId, params, content, weatherCtx) {
   }
 
   // 2) 全文景点识别 + 坐标
+  setStage(guideId, 'enrich:识别景点与定位坐标');
   let pois = [];
   try {
     pois = await ensureCoords(findPoiMentions(content, lib).slice(0, 12), cityName);
@@ -287,6 +316,7 @@ async function enrichGuide(guideId, params, content, weatherCtx) {
 
   // 3) 总览地图（全部点位打标 + 全程路线连接线）
   if (pois.length >= 1) {
+    setStage(guideId, 'enrich:绘制总览地图');
     try {
       const center = params._lng != null ? { lng: params._lng, lat: params._lat } : { lng: pois[0].lng, lat: pois[0].lat };
       const markers = pois.slice(0, 10).map((p, i) => ({ lng: p.lng, lat: p.lat, label: String(i + 1) }));
@@ -307,6 +337,7 @@ async function enrichGuide(guideId, params, content, weatherCtx) {
   if (pois.length >= 2) {
     const days = splitDays(content);
     for (let di = 0; di < days.length; di++) {
+      setStage(guideId, `enrich:第${di + 1}天路线与照片`);
       const d = days[di];
       const dayText = content.split('\n').slice(d.start, d.end + 1).join('\n');
       const dayPois = await ensureCoords(findPoiMentions(dayText, lib).slice(0, 6), cityName).catch(() => []);
@@ -358,6 +389,7 @@ async function enrichGuide(guideId, params, content, weatherCtx) {
   // 5) 封面（v1.2.0 起弃用随机搜的地标照片）：单色全程路线地图，
   //    所有要去的点位按行程顺序连线，前端以 grayscale 滤镜显示为单色
   if (pois.length >= 2) {
+    setStage(guideId, 'enrich:生成封面地图');
     try {
       const line = await journeyLine(pois);
       const center = params._lng != null

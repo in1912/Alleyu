@@ -90,14 +90,26 @@ const genRes = await fetch(URL_BASE + '/api/guides', {
   body: JSON.stringify({ destination: '杭州', days: 2 }),
 }).then((r) => r.json()).catch(() => null);
 let done = null;
+let genbarOk = false, stageTextOk = false;
 if (genRes && genRes.id) {
-  for (let i = 0; i < 120; i++) {
+  // v1.4.0：趁生成未完先进详情页——进度条 + 阶段说明词必须可见（桩+真高德 enrich 要半分钟，赶得上）
+  await page.goto(URL_BASE + '/#/guide/' + genRes.id);
+  try {
+    await page.waitForSelector('.genbar .fill', { timeout: 8000 });
+    genbarOk = true;
+    const label = await page.locator('.status-card b').innerText();
+    stageTextOk = /排队|正在|重试|增强/.test(label);
+    await page.screenshot({ path: path.join(IMG_DIR, '生成中.png'), fullPage: false });
+  } catch { /* 没赶上生成窗口 */ }
+  for (let i = 0; i < 240; i++) {
     await page.waitForTimeout(1000);
     const g = await fetch(URL_BASE + '/api/guides/' + genRes.id, { headers: { Authorization: 'Bearer ' + tk } }).then((r) => r.json()).catch(() => null);
     if (g && g.guide && (g.guide.status === 'done' || g.guide.status === 'error')) { done = g.guide; break; }
   }
 }
-ok(done && done.status === 'done', '桩模式现场生成新攻略（≤120s）');
+ok(genbarOk, '生成中：进度条可见（.genbar）');
+ok(stageTextOk, '生成中：阶段说明词显示（排队/正在/重试/增强）');
+ok(done && done.status === 'done', '桩模式现场生成新攻略（≤240s，高德配图限速串行波动大）');
 let detailShotDone = false;
 if (done && done.status === 'done') {
   ok(done.content.includes('![封面地图](') && done.content.includes('## 生成来源'), '服务端：封面地图在顶部 + 生成来源页脚');

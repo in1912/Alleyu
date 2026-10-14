@@ -2,6 +2,7 @@
 // 用法：node scripts/check-alleyu.mjs [--online]
 //  --online 追加真实外网断言（高德 POI/静态地图、Open-Meteo），消耗少量配额。
 import { spawn } from 'node:child_process';
+import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -28,6 +29,33 @@ async function req(p, { method = 'GET', body, token } = {}) {
   let j = null;
   try { j = JSON.parse(text); } catch { /* png 等 */ }
   return { status: res.status, j, text, headers: res.headers };
+}
+
+// 极简 SSE 客户端（Node 无全局 EventSource）：收事件到流结束或超时
+function sseCollect(urlPath, ms) {
+  return new Promise((resolve) => {
+    const events = [];
+    const rq = http.get({ host: 'localhost', port: PORT, path: urlPath }, (res) => {
+      let buf = '';
+      res.on('data', (d) => {
+        buf += d;
+        let i;
+        while ((i = buf.indexOf('\n\n')) >= 0) {
+          const block = buf.slice(0, i);
+          buf = buf.slice(i + 2);
+          let ev = 'message', data = '';
+          for (const line of block.split('\n')) {
+            if (line.startsWith('event:')) ev = line.slice(6).trim();
+            else if (line.startsWith('data:')) data += line.slice(5).trim();
+          }
+          events.push([ev, data]);
+        }
+      });
+      res.on('end', () => resolve(events));
+    });
+    rq.on('error', () => resolve(events));
+    setTimeout(() => { rq.destroy(); resolve(events); }, ms);
+  });
 }
 
 // ---- 起服务（独立 DATA_DIR，不碰真实数据） ----
@@ -162,14 +190,17 @@ try {
   r = await req('/api/guides', { method: 'POST', token: u1, body: { destination: '杭州', days: 3, mustVisits: ['西湖', '灵隐寺'], month: '10', group: '家庭' } });
   ok(r.status === 200 && r.j.id, '开通权限后 u1 创建攻略');
   const gid = r.j.id;
-  // SSE 轮询读终态
+  // SSE 轮询读终态（顺带记录 stage 流水，v1.4.0 进度条数据源）
   let guide = null;
+  const stagesSeen = [];
   for (let i = 0; i < 90; i++) {
     await sleep(1000);
     const g = await req(`/api/guides/${gid}`, { token: u1 });
+    if (g.j.guide && g.j.guide.stage && !stagesSeen.includes(g.j.guide.stage)) stagesSeen.push(g.j.guide.stage);
     if (g.j.guide && (g.j.guide.status === 'done' || g.j.guide.status === 'error')) { guide = g.j.guide; break; }
   }
   ok(guide && guide.status === 'done', '攻略生成完成（不超 90s）', guide ? guide.error : '超时');
+  ok(stagesSeen.length > 0, '生成过程暴露 stage 阶段（详情接口可见）', '见到：' + stagesSeen.join(','));
   if (guide && guide.status === 'done') {
     ok(guide.content.includes('## 一、旅行总览') && guide.content.includes('## 九、可选拓展'), '固定九模块框架齐');
     ok(/### Day 1｜/.test(guide.content), 'Day 小节标题格式');
@@ -186,6 +217,15 @@ try {
   ok(r.status === 404, '攻略按用户隔离（admin 也读不到 u1 的）');
   r = await req('/api/guides', { token: u1 });
   ok(r.j.guides.some((g) => g.id === gid), 'u1 列表含自己的攻略');
+
+  // v1.4.0 SSE 快照协议：对已完成攻略开流，首拍必须是 reset 全文快照而非 delta 追加
+  // （enrich 会在顶部前插封面地图——纯追加协议推不出封面还会重复中段；重连同理必须快照）
+  const sseEvents = await sseCollect(`/api/guides/${gid}/stream?token=${encodeURIComponent(u1)}`, 8000);
+  const firstContent = sseEvents.find(([nm]) => nm === 'reset' || nm === 'delta');
+  ok(firstContent && firstContent[0] === 'reset', 'SSE 首拍=reset 全文快照（前插封面/重连不丢不重）');
+  ok(sseEvents.some(([nm]) => nm === 'done'), 'SSE 终态 done 事件');
+  const resetText = firstContent ? JSON.parse(firstContent[1]).text : '';
+  ok(resetText.includes('![封面地图](') && resetText.indexOf('![封面地图](') < 100, '快照含顶部封面地图（守在页上看完生成也拿得到）');
 
   // ---- 国际线攻略（高德无海外底图 → 不插图，其余照常） ----
   console.log('== 国际线攻略（巴黎，桩 AI） ==');
@@ -204,6 +244,58 @@ try {
     ok(ig.content.includes('## 生成来源') && ig.content.includes('国际线路目的地'), '国际线：生成来源页脚 + 无图说明行');
     ok(/卢浮宫/.test(ig.content) && /埃菲尔铁塔/.test(ig.content), '库内景点进 AI 上下文（正文含卢浮宫/埃菲尔铁塔）');
   }
+
+  // ---- 空返回自动重试（v1.4.0） ----
+  // 假 AI 服务器：第 1 次请求只回 [DONE]（空流），第 2 次才吐内容。
+  // 复刻用户报障「AI 返回了空内容红字，再点一次就好了」→ 服务端必须自己重试而不是把错误甩给用户。
+  console.log('== 空返回自动重试（假 AI 服务器） ==');
+  let hits = 0;
+  const fakeAi = http.createServer((qreq, res) => {
+    hits++;
+    res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
+    if (hits === 1) {
+      res.end('data: [DONE]\n\n'); // 首连即空：复现偶发故障
+    } else {
+      // 分 3 段各隔 400ms：让 write 阶段持续 >1s，轮询才能观察到（一次性吐完只有几毫秒）
+      const parts = ['## 一、旅行总览\n', '重试后拿到的正文。', '东京一日走完浅草与涩谷。\n'];
+      let i = 0;
+      const t = setInterval(() => {
+        if (i < parts.length) {
+          res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: parts[i++] } }] })}\n\n`);
+        } else {
+          clearInterval(t);
+          res.end('data: [DONE]\n\n');
+        }
+      }, 400);
+    }
+  });
+  await new Promise((resolve) => fakeAi.listen(0, '127.0.0.1', resolve));
+  const fakePort = fakeAi.address().port;
+  r = await req('/api/ai/global', { method: 'PUT', token: admin, body: { base_url: `http://127.0.0.1:${fakePort}`, model: 'fake-retry-model', key: 'sk-fake-retry' } });
+  ok(r.status === 200, '全局配置指向假 AI 服务器');
+  r = await req('/api/guides', { method: 'POST', token: u1, body: { destination: '东京', days: 1 } });
+  ok(r.status === 200 && r.j.id, '创建东京攻略（走假 AI）');
+  const rgid = r.j.id;
+  let rg = null;
+  const retryStages = [];
+  for (let i = 0; i < 60; i++) {
+    await sleep(300);
+    const g = await req(`/api/guides/${rgid}`, { token: u1 });
+    if (g.j.guide && g.j.guide.stage && !retryStages.includes(g.j.guide.stage)) retryStages.push(g.j.guide.stage);
+    if (g.j.guide && (g.j.guide.status === 'done' || g.j.guide.status === 'error')) { rg = g.j.guide; break; }
+  }
+  ok(hits === 2, '空返回后服务端自动重发（请求恰好 2 次，非 1 次报错也非 3 次）', `hits=${hits}`);
+  ok(rg && rg.status === 'done', '重试后攻略完成', rg ? rg.error : '超时');
+  if (rg && rg.status === 'done') {
+    ok(rg.content.includes('重试后拿到的正文'), '正文来自第 2 次请求（真内容非桩）');
+    ok(rg.stage === '', '完成后 stage 清空（进度条收尾）');
+    ok(retryStages.includes('retry2'), '重试期间可见 retry2 阶段（前端会显示「自动重试中」）', '见到：' + retryStages.join(','));
+    ok(retryStages.includes('write'), '写作阶段可见');
+  }
+  fakeAi.close();
+  await req('/api/ai/global', { method: 'PUT', token: admin, body: { base_url: '', model: '', key: '' } });
+  r = await req('/api/ai/status', { token: admin });
+  ok(r.j.effective_source === 'none', '清空假配置（不影响后续段落）');
 
   // ---- 在线（真实外网） ----
   if (ONLINE) {

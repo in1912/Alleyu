@@ -11,8 +11,8 @@
 ```bash
 npm start                                     # 起 9610（start.bat 同效）；Node >= 22.5（node:sqlite）
 ALLEYU_AI_STUB=1 node server/index.js         # 桩 AI 模式（不调外网）
-node scripts/check-alleyu.mjs                 # 离线自检 51 项（独立临时 DATA_DIR，端口 9690）
-node scripts/check-alleyu.mjs --online        # +4 项真实高德/Open-Meteo 断言
+node scripts/check-alleyu.mjs                 # 离线自检 64 项（独立临时 DATA_DIR，端口 9690）
+node scripts/check-alleyu.mjs --online        # +4 项真实高德/Open-Meteo 断言（共 68）
 NODE_PATH=D:\cc\personal-workbench\node_modules node scripts/render-alleyu.mjs   # Playwright 渲染自检（先起 9610）
 cd web && npm run build                       # 前端 → dist/<时间戳>/ + .latest
 ```
@@ -29,7 +29,9 @@ Windows 注意：npm 卡住加 `--registry=https://registry.npmmirror.com`；重
 
 - **node:sqlite 坑**：SQL 字符串字面量必须单引号；占位符个数必须精确；加列用 addCol 幂等模式；PRAGMA journal_mode=DELETE + busy_timeout + 事务包裹在 db.js。
 - **EXEMPT 是相对路径**：`app.use('/api')` 内 req.path 不带 /api 前缀，EXEMPT=['auth/login','health','system-info','amap/mapimg','amap/photo']；system-info 另在顶层注册。
-- **SSE=查库**：生成写库节流 ~600ms，stream 端点 400ms 轮询推 delta；前端 GuideView 依赖 `streamed` ref（不是 content）。
+- **SSE=查库**：生成写库节流 ~600ms，stream 端点 400ms 轮询推增量；前端 GuideView 依赖 `streamed` ref（不是 content）。
+- **SSE 内容协议=基线快照式（v1.4.0）**：tick 维护 `believed`（认为客户端已有的精确内容）——`c.startsWith(believed)` 走 `delta` 增量，否则（首拍/断线重连/enrich **顶部前插封面**改写内容）推 `reset` 全文快照。**旧纯 `slice(sent)` 协议的两个真 bug 就是它修的**：前插场景把中段文本当增量推、封面永远到不了前端；重连 `sent=0` 全文重复追加。前端 done 后以库内全文为准（长度比较不可靠）。
+- **生成阶段管线（v1.4.0）**：guides.stage 列（weather/connect/write/retryN/enrich:子步骤），guideService setStage 写库、SSE 推 `stage` 事件、GuideView 进度条消费；done/error 清空。**空返回自动重试**：run() 里 3 次尝试，仅当内容仍为空才重试（1000ms×attempt 退避，stage=retryN）；半途断流且已有内容仍按失败 throw（不产出半篇攻略）；3 次全空才报「已自动重试 3 次仍为空」。
 - **高德 staticmap paths 格式**（实测验证过）：`8,0x3f7d5c,0.9,,:lng,lat;lng,lat` — 冒号在点串前、分号隔点、竖线隔多条线。免费 key 3 QPS → amapService 全局 350ms 串行节流，别拆。
 - 照片代理 `/api/amap/photo?u=` 有域名白名单（amap/autonavi/mypeople/gaode 系）。
 - 天气走 Open-Meteo 免 key：预报 16 天；历史用 archive 的 monthStats（一次多年调用+客户端同月过滤，sampleDays≥20 才可信）。预警是规则研判，UI 必须带"非官方预警"标注。
@@ -49,7 +51,7 @@ Windows 注意：npm 卡住加 `--registry=https://registry.npmmirror.com`；重
 
 ## 发版收尾清单
 
-1. 两个自检全绿（check 51/51 或 --online 55/55；render 31/31）
+1. 两个自检全绿（check 64/64 或 --online 68/68；render 33/33）
 2. 改了前端 → rebuild，确认 dist/.latest 指向新目录
 3. README 截图用 render-alleyu.mjs 重新生成（img/ 文件名=页面名）
 4. 提交推送双远程：github `git@github.com:in1912/Alleyu.git` + gitea `https://gitea.in1912.cc/in1912/Alleyu.git`，push 后 ls-remote 核对

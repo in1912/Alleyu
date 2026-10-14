@@ -122,6 +122,8 @@ function addCol(table, col, decl) {
 // 示例：addCol('guides', 'shared', 'INTEGER NOT NULL DEFAULT 0');
 // v1.3.0：城市归属线路（国内 / 欧洲线 / 中亚线 / 东亚线 / 北美线 / 南美线）
 addCol('cities', 'line', "TEXT NOT NULL DEFAULT '国内'");
+// v1.4.0：生成阶段（weather/connect/write/retryN/enrich:子步骤），SSE 推给前端做进度条
+addCol('guides', 'stage', "TEXT NOT NULL DEFAULT ''");
 
 // ---------- settings 读写 ----------
 function getSetting(key) {

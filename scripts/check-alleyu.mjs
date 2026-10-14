@@ -162,10 +162,12 @@ try {
     ok(guide.content.includes('## 一、旅行总览') && guide.content.includes('## 九、可选拓展'), '固定九模块框架齐');
     ok(/### Day 1｜/.test(guide.content), 'Day 小节标题格式');
     ok(guide.content.includes('天气推演') || guide.content.includes('天气研判') || guide.content.includes('逐日预报'), '天气块已插入');
-    ok((guide.images || []).some((x) => x.type === 'cover'), '封面图');
+    ok((guide.images || []).some((x) => x.type === 'cover' && String(x.url).includes('/api/amap/mapimg/')), '封面=全程路线地图（非随机照片）');
+    ok(guide.content.includes('![封面地图]('), '封面地图插在正文顶部');
     ok((guide.images || []).some((x) => x.type === 'overview'), '总览地图');
     ok((guide.images || []).some((x) => x.type === 'route'), '每日路线图');
     ok((guide.images || []).some((x) => x.type === 'photo'), '景点实景照片');
+    ok(guide.content.includes('## 生成来源') && guide.content.includes('https://lbs.amap.com') && guide.content.includes('https://open-meteo.com'), '页脚生成来源+来源链接');
   }
   // 多租户隔离：admin 看不到 u1 的攻略详情？——管理员也无权读他人攻略（本设计 guides 仅本人）
   r = await req(`/api/guides/${gid}`, { token: admin2 });

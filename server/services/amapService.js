@@ -104,21 +104,24 @@ function downsample(line, maxPoints = 60) {
 
 // 静态地图 URL 组装（key 服务端补，不出网）。markers: [{lng,lat,label}]
 // paths: [[ [lng,lat], ... ]]（经纬度序列，每元素一条折线）
+// ink=true 时用近黑墨色（配合前端 grayscale 滤镜做单色封面图）
 // 高德分隔符规则（官方 REST 文档）：markers 多个用 | 分隔；paths 多条用 | 分隔，
 // 但「一条折线内部的点」用 ; 分隔——与 markers 不同，这里是最容易踩的坑。
-function buildStaticMapUrl({ center, zoom = 11, size = '750*380', markers = [], paths = [], traffic = false }) {
+function buildStaticMapUrl({ center, zoom = 11, size = '750*380', markers = [], paths = [], traffic = false, ink = false }) {
   const params = new URLSearchParams();
   if (center) params.set('location', `${center.lng},${center.lat}`);
   params.set('zoom', String(zoom));
   params.set('size', size);
   params.set('scale', '2');
   if (markers.length) {
-    params.set('markers', markers.map((m) => `large,0x2f6b45,${m.label}:${m.lng},${m.lat}`).join('|'));
+    const mc = ink ? '0x111111' : '0x2f6b45';
+    params.set('markers', markers.map((m) => `large,${mc},${m.label}:${m.lng},${m.lat}`).join('|'));
   }
   if (paths.length) {
+    const pc = ink ? '0x1a1a1a' : '0x3f7d5c';
     params.set('paths', paths.map((line) => {
       const pts = line.map((p) => `${p[0]},${p[1]}`).join(';');
-      return `8,0x3f7d5c,0.9,,:${pts}`; // 实测：fillcolor 后必须带冒号，点用 ; 分隔（2026-10 curl 验证）
+      return `8,${pc},0.9,,:${pts}`; // 实测：fillcolor 后必须带冒号，点用 ; 分隔（2026-10 curl 验证）
     }).join('|'));
   }
   if (traffic) params.set('traffic', '1');

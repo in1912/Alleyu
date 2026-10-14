@@ -64,14 +64,55 @@ await page.screenshot({ path: path.join(IMG_DIR, '首页.png'), fullPage: false 
 await page.click('.searchbar .go');
 await page.waitForURL('**/#/plan**', { timeout: 8000 });
 ok(true, '回车/做攻略 → 计划表单');
-// 关键回归：SPA 登录后不经整页刷新直达功能页，侧栏菜单必须非空（v1.1.0 修的空菜单 bug）
-const navCount = await page.locator('.side .nav-item').count();
+// 关键回归：SPA 登录后不经整页刷新直达功能页，侧栏菜单必须非空（v1.1.0 修的空菜单 bug）。
+// me 是路由 watcher 异步拉的——必须等菜单出现再数，立刻数是竞态（首跑曾假失败）
+let navOk = true;
+try { await page.waitForSelector('.side .nav-item', { timeout: 8000 }); } catch { navOk = false; }
+const navCount = navOk ? await page.locator('.side .nav-item').count() : 0;
 ok(navCount >= 5, 'SPA 登录后侧栏菜单非空（修复空菜单）');
+// v1.1.1：favicon 与侧栏图标去猪化/单色化
+const fav = await page.getAttribute('link[rel="icon"]', 'href');
+ok(fav && fav.includes('🐰') && !fav.includes('🐷'), 'favicon=兔子（猪头已换）');
+const svgNav = await page.locator('.side .nav-item svg').count();
+ok(svgNav === navCount, '侧栏图标=单色 SVG（每项一枚）');
+const icTexts = await page.locator('.side .nav-item .ic').allInnerTexts();
+ok(icTexts.every((t) => !t.trim()), '侧栏图标槽无残留 emoji 文本');
 
 // 计划表单元素
 await page.waitForSelector('input[placeholder="例如：杭州"]', { timeout: 8000 });
 await page.screenshot({ path: path.join(IMG_DIR, '生成攻略.png') });
 ok(true, '表单渲染');
+
+// v1.2.0：现场生成一篇（桩 AI + 真高德配图）——验证单色封面地图 + 总览连线 + 生成来源页脚
+const tk = await page.evaluate(() => localStorage.getItem('alleyu_token') || '');
+const genRes = await fetch(URL_BASE + '/api/guides', {
+  method: 'POST', headers: { Authorization: 'Bearer ' + tk, 'Content-Type': 'application/json' },
+  body: JSON.stringify({ destination: '杭州', days: 2 }),
+}).then((r) => r.json()).catch(() => null);
+let done = null;
+if (genRes && genRes.id) {
+  for (let i = 0; i < 120; i++) {
+    await page.waitForTimeout(1000);
+    const g = await fetch(URL_BASE + '/api/guides/' + genRes.id, { headers: { Authorization: 'Bearer ' + tk } }).then((r) => r.json()).catch(() => null);
+    if (g && g.guide && (g.guide.status === 'done' || g.guide.status === 'error')) { done = g.guide; break; }
+  }
+}
+ok(done && done.status === 'done', '桩模式现场生成新攻略（≤120s）');
+let detailShotDone = false;
+if (done && done.status === 'done') {
+  ok(done.content.includes('![封面地图](') && done.content.includes('## 生成来源'), '服务端：封面地图在顶部 + 生成来源页脚');
+  await page.goto(URL_BASE + '/#/guide/' + genRes.id);
+  await page.waitForSelector('.md img', { timeout: 20000 });
+  await page.waitForTimeout(600);
+  const firstAlt = await page.locator('.md img').first().getAttribute('alt');
+  ok(firstAlt === '封面地图', '详情页第一张图=封面地图（不再用随机照片）');
+  const filt = await page.evaluate(() => { const el = document.querySelector('.md img[alt="封面地图"]'); return el ? getComputedStyle(el).filter : ''; });
+  ok(/grayscale/.test(filt), '封面地图单色显示（grayscale 滤镜）');
+  const mdText2 = await page.locator('.md').innerText();
+  ok(/生成来源/.test(mdText2) && /高德开放平台/.test(mdText2) && /Open-Meteo/.test(mdText2), '生成来源+链接渲染在攻略底部');
+  await page.screenshot({ path: path.join(IMG_DIR, '攻略详情.png'), fullPage: false });
+  detailShotDone = true;
+}
 
 // 其余页面截图（不深度断言，保底可见性）
 for (const [hash, sel, name] of [
@@ -98,10 +139,17 @@ if (cards > 0) {
   await page.locator('.gcard').first().click();
   await page.waitForSelector('.md', { timeout: 20000 });
   await page.waitForTimeout(500);
-  await page.screenshot({ path: path.join(IMG_DIR, '攻略详情.png'), fullPage: false });
+  // 详情截图只认「现场新生成」那篇（旧攻略是照片封面）；生成失败才用历史第一条兜底
+  if (!detailShotDone) await page.screenshot({ path: path.join(IMG_DIR, '攻略详情.png'), fullPage: false });
   ok(true, '攻略详情渲染（markdown）');
   const mdText = await page.locator('.md').innerText();
   ok(!/本地桩输出|ALLEYU_AI_STUB/.test(mdText), '攻略正文无桩提示横幅');
+  // 生成中转圈图标：从已加载的 GuideView chunk 里验证是兔不是猪
+  const gvUrl = await page.evaluate(() => performance.getEntriesByType('resource').map((e) => e.name).find((u) => /GuideView-[\w-]+\.js$/.test(u)));
+  if (gvUrl) {
+    const txt = await (await page.evaluate((u) => fetch(u).then((r) => r.text()), gvUrl));
+    ok(txt.includes('🐰') && !txt.includes('🐷'), '生成中转圈图标=兔子（非猪）');
+  }
 } else {
   console.log('  ⚠️ 无历史攻略，跳过详情截图');
 }

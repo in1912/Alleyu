@@ -145,8 +145,18 @@ async function run(guideId) {
     return { content, images: [] };
   });
 
+  // 生成来源页脚：无论增强成败都固定追加（每篇攻略都要交代内容和数据从哪来）
+  const finalContent = enrichResult.content + sourceFooter(cfg);
+
   db.prepare("UPDATE guides SET content=?, images_json=?, status='done', error='', updated_at=datetime('now','localtime') WHERE id=?")
-    .run(enrichResult.content, JSON.stringify(enrichResult.images), guideId);
+    .run(finalContent, JSON.stringify(enrichResult.images), guideId);
+}
+
+// 生成来源块：AI 模型出处 + 地图/天气数据来源链接（v1.2.0 用户要求）
+function sourceFooter(cfg) {
+  const srcLabel = { personal: '我的个人接口', global: '管理员全局接口', stub: '本地桩输出，非真实攻略' }[cfg.source] || '未知来源';
+  const ts = new Date().toLocaleString('zh-CN', { hour12: false });
+  return `\n\n---\n\n## 生成来源\n\n- **AI 模型**：\`${cfg.model || '未知'}\`（${srcLabel}，OpenAI 兼容格式）\n- **地图与点位**：[高德开放平台](https://lbs.amap.com)（POI 检索 · 静态地图 · 实景照片）\n- **天气数据**：[Open-Meteo](https://open-meteo.com)（16 天预报 + 历史同月推演）\n- 内容由 AI 生成，请以实地与官方信息为准。生成时间：${ts}\n`;
 }
 
 // ---------- 图文增强 ----------
@@ -173,9 +183,11 @@ function libraryAttractions(cityId) {
 function findPoiMentions(text, lib) {
   const found = [];
   for (const a of lib) {
-    if (text.includes(a.name) && !found.some((f) => f.name === a.name)) found.push({ ...a });
+    const at = text.indexOf(a.name);
+    if (at >= 0 && !found.some((f) => f.name === a.name)) found.push({ ...a, at });
   }
-  return found;
+  // 按正文首次出现顺序排＝行程顺序，全程连线按它走
+  return found.sort((x, y) => x.at - y.at);
 }
 // 未在库中的名字不猜——路线图只画能定位的点。
 
@@ -216,6 +228,16 @@ function proxiedPhoto(u) {
   return `/api/amap/photo?u=${encodeURIComponent(u)}`;
 }
 
+// 全程连接线：优先真实驾车路线；高德失败也必须有线——直连折线兜底
+async function journeyLine(pois) {
+  const pts = pois.map((p) => ({ lng: p.lng, lat: p.lat }));
+  try {
+    return await amap.drivingPolyline(pts);
+  } catch {
+    return pts.map((p) => [p.lng, p.lat]);
+  }
+}
+
 // 按天切块：以「### Day」为界
 function splitDays(content) {
   const lines = content.split('\n');
@@ -251,16 +273,21 @@ async function enrichGuide(guideId, params, content, weatherCtx) {
     pois = await ensureCoords(findPoiMentions(content, lib).slice(0, 12), cityName);
   } catch (e) { console.warn('[enrich] 景点定位失败:', e.message); }
 
-  // 3) 总览地图（全部点位打标）
+  // 3) 总览地图（全部点位打标 + 全程路线连接线）
   if (pois.length >= 1) {
     try {
       const center = params._lng != null ? { lng: params._lng, lat: params._lat } : { lng: pois[0].lng, lat: pois[0].lat };
       const markers = pois.slice(0, 10).map((p, i) => ({ lng: p.lng, lat: p.lat, label: String(i + 1) }));
-      const img = await fetchMapImage({ center, zoom: 11, markers });
+      let paths = [];
+      if (pois.length >= 2) {
+        const line = await journeyLine(pois);
+        if (line.length >= 2) paths = [amap.downsample(line, 70)];
+      }
+      const img = await fetchMapImage({ center, zoom: 11, markers, paths });
       images.push({ type: 'overview', url: img.url });
       const idx = content.indexOf('\n## 二、');
       const anchor = idx >= 0 ? idx : content.length;
-      content = content.slice(0, anchor) + `\n\n**📍 全程点位总览**（数字即下方行程顺序参考）\n\n${photoLine('路线总览', img.url)}\n` + content.slice(anchor);
+      content = content.slice(0, anchor) + `\n\n**📍 全程点位总览**（数字即下方行程顺序参考，连线为全程走向）\n\n${photoLine('路线总览', img.url)}\n` + content.slice(anchor);
     } catch (e) { console.warn('[enrich] 总览地图失败:', e.message); }
   }
 
@@ -316,16 +343,27 @@ async function enrichGuide(guideId, params, content, weatherCtx) {
     }
   }
 
-  // 5) 城市封面照（美食/街景一张，放在标题后）
-  try {
-    const hits = await amap.searchPoi({ keywords: `${cityName} 地标`, city: cityName, offset: 5 });
-    const hero = (hits.find((h) => h.photo) || {}).photo;
-    if (hero && amap.photoHostAllowed(hero)) {
+  // 5) 封面（v1.2.0 起弃用随机搜的地标照片）：单色全程路线地图，
+  //    所有要去的点位按行程顺序连线，前端以 grayscale 滤镜显示为单色
+  if (pois.length >= 2) {
+    try {
+      const line = await journeyLine(pois);
+      const center = params._lng != null
+        ? { lng: params._lng, lat: params._lat }
+        : {
+            lng: pois.reduce((s, p) => s + p.lng, 0) / pois.length,
+            lat: pois.reduce((s, p) => s + p.lat, 0) / pois.length,
+          };
+      const img = await fetchMapImage({
+        center, zoom: 11, ink: true,
+        markers: pois.slice(0, 10).map((p, i) => ({ lng: p.lng, lat: p.lat, label: String(i + 1) })),
+        paths: line.length >= 2 ? [amap.downsample(line, 70)] : [],
+      });
       const firstLineEnd = content.indexOf('\n');
-      content = content.slice(0, firstLineEnd) + `\n\n${photoLine(cityName, proxiedPhoto(hero))}` + content.slice(firstLineEnd);
-      images.unshift({ type: 'cover', url: proxiedPhoto(hero) });
-    }
-  } catch (e) { console.warn('[enrich] 封面失败:', e.message); }
+      content = content.slice(0, firstLineEnd) + `\n\n![封面地图](${img.url})\n` + content.slice(firstLineEnd);
+      images.unshift({ type: 'cover', url: img.url });
+    } catch (e) { console.warn('[enrich] 封面地图失败:', e.message); }
+  }
 
   return { content, images };
 }

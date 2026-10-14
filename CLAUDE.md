@@ -11,7 +11,7 @@
 ```bash
 npm start                                     # 起 9610（start.bat 同效）；Node >= 22.5（node:sqlite）
 ALLEYU_AI_STUB=1 node server/index.js         # 桩 AI 模式（不调外网）
-node scripts/check-alleyu.mjs                 # 离线自检 41 项（独立临时 DATA_DIR，端口 9690）
+node scripts/check-alleyu.mjs                 # 离线自检 43 项（独立临时 DATA_DIR，端口 9690）
 node scripts/check-alleyu.mjs --online        # +4 项真实高德/Open-Meteo 断言
 NODE_PATH=D:\cc\personal-workbench\node_modules node scripts/render-alleyu.mjs   # Playwright 渲染自检（先起 9610）
 cd web && npm run build                       # 前端 → dist/<时间戳>/ + .latest
@@ -35,6 +35,9 @@ Windows 注意：npm 卡住加 `--registry=https://registry.npmmirror.com`；重
 - 天气走 Open-Meteo 免 key：预报 16 天；历史用 archive 的 monthStats（一次多年调用+客户端同月过滤，sampleDays≥20 才可信）。预警是规则研判，UI 必须带"非官方预警"标注。
 - 九模块框架模板在 guideService.js 的 FRAMEWORK 常量（用户原话模板，勿改结构）；提示词里要求 `### Day N｜主题` 标题格式，splitDays 靠它切天。
 - 桩语义（v1.1.0 起）：**桩是兜底不是覆盖**——streamChat 只在 `!cfg || cfg.source==='stub'` 时走桩，个人/全局配齐了 Key 一律走真接口。ALLEYU_AI_STUB=1 只剩两个作用：设置页显示标记 + 放行 guideRoutes 的 AI 权限闸门（否则没配 key 时 400）。
+- 封面与连线（v1.2.0）：**封面=单色全程路线地图，不再随机搜照片**——buildStaticMapUrl 传 `ink:true`（标记 0x111111/线 0x1a1a1a），前端 `img[alt="封面地图"]{filter:grayscale(1)}` 显示层压灰，零图像处理依赖；总览图与封面都带全程连接线，`journeyLine()`=drivingPolyline 失败回落直连折线（**保证一定有线**）；点位顺序=正文首次出现顺序（findPoiMentions 按 indexOf 排序=行程顺序）。
+- 生成来源页脚（v1.2.0）：run() 里 `enrichResult.content + sourceFooter(cfg)` 无条件追加——AI 模型/接口出处 + 高德/Open-Meteo 链接 + 时间戳，增强失败也交代。
+- 侧栏图标（v1.1.1）：App.vue 的 ICONS 表=单色线性 SVG（stroke=currentColor 跟随文字色，激活变白），v-html 注入；favicon 与生成转圈=🐰；渲染自检的攻略详情截图只认「现场新生成」那篇（detailShotDone 标志，旧攻略是照片封面别拿去当 README 图）。
 - 攻略展示净化（GuideView.cleanMd）：剥旧桩横幅 + 正文只从第一个 markdown 标题开始（AI 废话前言不显示不复制）；存储原文不动。
 - 高德 Key 常见错误码人话提示在 settingsRoutes 的 AMAP_HINTS（10009=JS API 类型 Key 调不了 REST，真实踩坑）；`POST /settings/amap/test` 永远回 200+{ok,...}，`POST /settings/amap/reset` 恢复 db.js 的 DEFAULT_AMAP_KEY。
 - SPA 挂载坑（App.vue）：登录是 SPA 内跳转，App 只挂载一次 → 必须 watch route.fullPath 补拉 /auth/me，否则从首页进任何功能页侧栏空菜单。渲染自检要用 SPA 流程（登录后不整页 goto），page.goto 会重挂 App 把这类 bug 藏住。
@@ -44,7 +47,7 @@ Windows 注意：npm 卡住加 `--registry=https://registry.npmmirror.com`；重
 
 ## 发版收尾清单
 
-1. 两个自检全绿（check 41/41 或 --online 45/45；render 20/20）
+1. 两个自检全绿（check 43/43 或 --online 47/47；render 29/29）
 2. 改了前端 → rebuild，确认 dist/.latest 指向新目录
 3. README 截图用 render-alleyu.mjs 重新生成（img/ 文件名=页面名）
 4. 提交推送双远程：github `git@github.com:in1912/Alleyu.git` + gitea `https://gitea.in1912.cc/in1912/Alleyu.git`，push 后 ls-remote 核对

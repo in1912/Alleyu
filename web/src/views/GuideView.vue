@@ -10,7 +10,7 @@
     </div>
 
     <div v-if="status === 'pending' || status === 'generating'" class="card status-card">
-      <div class="spin">🐷</div>
+      <div class="spin">🐰</div>
       <div>
         <b>{{ status === 'pending' ? '排队中…' : 'AI 正在写攻略…' }}</b>
         <p class="hint">{{ streamed ? '已收到 ' + streamed.length + ' 字' : '正在连接模型' }}</p>

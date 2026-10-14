@@ -47,7 +47,8 @@ button { font-family: inherit; }
 }
 .nav-item:hover { background: rgba(92, 138, 106, 0.1); }
 .nav-item.on { background: var(--acc); color: #fff; font-weight: 600; }
-.nav-item .ic { width: 20px; text-align: center; }
+.nav-item .ic { width: 20px; text-align: center; flex: none; }
+.nav-item .ic svg { width: 17px; height: 17px; display: inline-block; vertical-align: -3px; }
 .side .spacer { flex: 1; }
 .side .me { padding: 10px 12px; border-top: 1px solid var(--line); font-size: 13px; color: var(--mut); }
 .side .me b { color: var(--ink); display: block; }
@@ -118,6 +119,8 @@ table.tb th { color: var(--mut); font-weight: 500; font-size: 12.5px; }
 .md ul, .md ol { padding-left: 22px; margin: 8px 0; }
 .md li { margin: 3px 0; }
 .md img { max-width: 100%; border-radius: 10px; margin: 8px 0; box-shadow: var(--shadow); display: block; }
+/* 封面＝单色全程路线地图（存储仍是彩色图，显示层压灰） */
+.md img[alt="封面地图"] { filter: grayscale(1) contrast(1.05); }
 .md blockquote {
   margin: 10px 0; padding: 8px 14px; background: var(--card2);
   border-left: 4px solid var(--acc); border-radius: 8px; color: var(--ink);
@@ -164,7 +167,7 @@ table.tb th { color: var(--mut); font-weight: 500; font-size: 12.5px; }
 }
 .hot-cities .c:hover { background: var(--acc); color: #fff; border-color: var(--acc); }
 
-/* 浮动粒子（小猪跳跃的 ⭐） */
+/* 浮动粒子（小兔跳跃的 ⭐） */
 .float-particle {
   animation: floatUp 1.1s ease-out forwards;
   pointer-events: none;

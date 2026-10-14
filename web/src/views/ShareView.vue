@@ -9,7 +9,7 @@
       <span v-if="sh" class="hint">更新于 {{ sh.updated_at }}</span>
       <span style="flex: 1"></span>
       <button v-if="sh" class="btn ghost sm" @click="copy">复制全文</button>
-      <button v-if="sh" class="btn sm" @click="pdf">导出 PDF</button>
+      <button v-if="sh" class="btn sm" :disabled="pdfBusy" @click="pdf">{{ pdfBusy ? '生成中…' : '导出 PDF' }}</button>
     </div>
 
     <div v-if="err" class="card" style="max-width: 640px; margin: 60px auto; text-align: center">
@@ -36,7 +36,7 @@
 import { computed, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { marked } from 'marked';
-import { api } from '../api/index.js';
+import { api, downloadPdfFile } from '../api/index.js';
 import { cleanMd } from '../md.js';
 
 const route = useRoute();
@@ -46,13 +46,26 @@ const err = ref('');
 marked.setOptions({ breaks: true, gfm: true });
 const html = computed(() => marked.parse(cleanMd(sh.value?.content || '')));
 
-// 打印/导出 PDF：先改 document.title 让浏览器拿攻略标题当默认文件名（打印对话框可改），
-// 打印是同步阻塞的，结束后改回站点名
-function pdf() {
-  const t = document.title;
-  document.title = (sh.value?.title || '攻略') + ' - 游巷';
-  window.print();
-  document.title = t;
+// 导出 PDF（v1.6.1）：公开端点生成文件直接下载（免登录同分享页本身）；
+// 服务器没中文字体回 NO_FONT → 问一句回落浏览器打印
+const pdfBusy = ref(false);
+async function pdf() {
+  if (pdfBusy.value) return;
+  pdfBusy.value = true;
+  try {
+    await downloadPdfFile('/api/share/' + route.params.token + '/pdf', (sh.value?.title || '攻略') + '.pdf');
+  } catch (e) {
+    if (e.code === 'NO_FONT') {
+      if (confirm(e.message + '\n\n点「确定」改用浏览器打印导出（打印对话框里选「另存为 PDF」）。')) {
+        const t = document.title;
+        document.title = (sh.value?.title || '攻略') + ' - 游巷';
+        window.print();
+        document.title = t;
+      }
+    } else alert(e.message);
+  } finally {
+    pdfBusy.value = false;
+  }
 }
 function copy() {
   navigator.clipboard.writeText(cleanMd(sh.value?.content || '')).then(() => alert('已复制全文'));

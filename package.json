@@ -1,6 +1,6 @@
 {
   "name": "alleyu",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "private": true,
   "description": "游巷——AI引导式旅游攻略：图文并茂、高德路线图、天气研判",
   "main": "server/index.js",
@@ -13,7 +13,9 @@
     "render": "node scripts/render-alleyu.mjs"
   },
   "dependencies": {
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "marked": "^18.1.1",
+    "pdfkit": "^0.20.2"
   },
   "engines": {
     "node": ">=22.5.0"

@@ -11,9 +11,9 @@
 ```bash
 npm start                                     # 起 9610（start.bat 同效）；Node >= 22.5（node:sqlite）
 ALLEYU_AI_STUB=1 node server/index.js         # 桩 AI 模式（不调外网；配了真 Key 仍走真接口）
-node scripts/check-alleyu.mjs                 # 离线自检 111 项（独立临时 DATA_DIR，端口 9690）
-node scripts/check-alleyu.mjs --online        # +4 项真实高德/Open-Meteo 断言（共 115）
-NODE_PATH=D:\cc\personal-workbench\node_modules node scripts/render-alleyu.mjs   # Playwright 渲染自检（自起 FORCE_STUB 桩服务器，独占 9610）
+node scripts/check-alleyu.mjs                 # 离线自检 120 项（独立临时 DATA_DIR，端口 9690）
+node scripts/check-alleyu.mjs --online        # +4 项真实高德/Open-Meteo 断言（共 124）
+NODE_PATH=D:\cc\personal-workbench\node_modules node scripts/render-alleyu.mjs   # Playwright 渲染自检 52 项（自起 FORCE_STUB 桩服务器，独占 9610）
 cd web && npm run build                       # 前端 → dist/<时间戳>/ + .latest
 ```
 
@@ -44,7 +44,8 @@ Windows 注意：npm 卡住加 `--registry=https://registry.npmmirror.com`；重
 - 国际线路（v1.3.0）：cities.line 列（addCol 默认'国内'；线路白名单 LINES 在 cityRoutes）；db.js SEED_INTL=五线 58 城直接入库（城市挑选对齐参考站 tabiji.ai 覆盖，门票=「约」参考值，坐标 WGS-84 仅天气用），迁移 seedIntlLines 用 settings 标记 seed_intl_v1 **只跑一次，之后管理员删改不复活**；`GET /api/cities/lines` 汇总计数、`/cities?line=` 过滤；库页 LibraryView 线路 pill + 线路列 + 弹窗线路下拉。
 - **国际线攻略护栏**：高德静态地图实测无海外底图（zoom4 也只渲染中国区域）→ enrichGuide 查城市 line，国际线直接 return（跳过 POI 解析/总览图/路线图/封面/照片），正文插一行「国际线路目的地…不插图」说明；天气（Open-Meteo 全球）+ AI 正文 + 生成来源页脚照常。attractions 新录时国际城不触发高德回填。
 - 攻略展示净化（web/src/md.js 的 cleanMd，GuideView/ShareView 共用）：剥旧桩横幅 + `<!-- alleyu:stub -->` 注释 + 正文只从第一个 markdown 标题开始（AI 废话前言不显示不复制）；存储原文不动。
-- **v1.6.0 分享系统**：`shares` 表（guide_id/token 32hex/mode dynamic|static/snapshot）DDL 在 db.js；管理端点全在 guideRoutes（GET/POST `/:id/shares`、PUT/DELETE `/:id/shares/:token`，全部 user_id 隔离+done-only 409），公开读在 shareRoutes（EXEMPT）。动态=现读 guides.content（攻略非 done 时 404「稍后再试」），静态=读 snapshot（PUT 刷新）。前端 ShareView（#/s/:token，router 守卫豁免 name==='share'，App.vue 整页无侧栏）；GuideView 分享对话框（创建即复制链接）+ 编辑模式（改 clean 后原文存库）。**导出 PDF=window.print()**：零依赖，打印 CSS 在 style.css @media print（.no-print + 侧栏/按钮行/进度卡全隐，print-color-adjust:exact），打印前临时改 document.title 当文件名（print 同步阻塞，结束改回）。
+- **v1.6.0 分享系统**：`shares` 表（guide_id/token 32hex/mode dynamic|static/snapshot）DDL 在 db.js；管理端点全在 guideRoutes（GET/POST `/:id/shares`、PUT/DELETE `/:id/shares/:token`，全部 user_id 隔离+done-only 409），公开读在 shareRoutes（EXEMPT）。动态=现读 guides.content（攻略非 done 时 404「稍后再试」），静态=读 snapshot（PUT 刷新）。前端 ShareView（#/s/:token，router 守卫豁免 name==='share'，App.vue 整页无侧栏）；GuideView 分享对话框（创建即复制链接）+ 编辑模式（改 clean 后原文存库）。
+- **v1.6.1 导出 PDF=服务端直出下载文件**（用户明确否掉 window.print）：`GET /api/guides/:id/pdf`（本人+done-only 409）与 `GET /api/share/:token/pdf`（EXEMPT 免登录，内容口径与 GET /:token 一致：静态=快照/动态=现读），都回 `Content-Disposition: attachment; filename*=UTF-8''<urlencoded 标题>.pdf`。生成在 `services/pdfService.js`：marked.lexer 词法树逐块绘制（h1-3/段落/列表/表格/引用/hr/code），行内样式摊平成 runs 用 pdfkit continued 链混排（strong→bold/link 蓝下划线/codespan 橙），图片预载（/api/amap/mapimg/ 直读 data/mapimg 本地缓存、photo 代理解码后 fetch、外链 15s 超时 8MB 上限、只收 PNG/JPEG、单图失败占位符不拦整份），页脚页码用 bufferedPageRange+switchToPage 回写。**中文字体探测顺序=data/fonts/*.{ttf,otf} → ALLEYU_PDF_FONT → Windows Deng.ttf（粗体对 Dengb.ttf）→ simhei.ttf → Linux 思源黑体 OTF；.ttc 一律排除**（fontkit 对集合缺 createSubset，msyh.ttc 实测崩），没有字体抛 NO_FONT→路由 400 {code}→前端 confirm 后回落 window.print()（打印 CSS 保留是兜底不是主路径）。前端下载封装在 api/index.js 的 downloadPdfFile（fetch→blob→a[download]，按钮带「生成中…」busy 态）。
 - **v1.6.0 两个真 bug 的根因（都实测验证过）**：①deepseek-flash 是推理模型——`max_tokens` 预算被 reasoning_content 吃光导致正文空/极短（探针：200 tokens 全进思考、content 0 字、finish=length）→ streamChat 请求体固定带 `thinking:{type:'disabled'}`（`reasoning_effort:'none'` 等效；`enable_thinking`/`chat_template_kwargs` 对 deepseek 无效）；②全局 Key 401=用户粘贴丢了 `sk-` 前缀（32hex vs 35 字符同尾巴，服务商报错只回 `****a9f1` 看不出）→ testConnection 401 且 Key 是裸 32hex 时提示「像是粘贴时丢了开头」+ 前端 Key 输入框非 sk- 开头实时黄字提醒。
 - 高德 Key 常见错误码人话提示在 settingsRoutes 的 AMAP_HINTS（10009=JS API 类型 Key 调不了 REST，真实踩坑）；`POST /settings/amap/test` 永远回 200+{ok,...}，`POST /settings/amap/reset` 恢复 db.js 的 DEFAULT_AMAP_KEY。
 - SPA 挂载坑（App.vue）：登录是 SPA 内跳转，App 只挂载一次 → 必须 watch route.fullPath 补拉 /auth/me，否则从首页进任何功能页侧栏空菜单。渲染自检要用 SPA 流程（登录后不整页 goto），page.goto 会重挂 App 把这类 bug 藏住。
@@ -54,7 +55,7 @@ Windows 注意：npm 卡住加 `--registry=https://registry.npmmirror.com`；重
 
 ## 发版收尾清单
 
-1. 两个自检全绿（check 111/111 或 --online 115/115；render 49/49——render 前先停 9610 上的一切服务，它要独占端口自起桩服务器）
+1. 两个自检全绿（check 120/120 或 --online 124/124；render 52/52——render 前先停 9610 上的一切服务，它要独占端口自起桩服务器）
 2. 改了前端 → rebuild，确认 dist/.latest 指向新目录
 3. README 截图用 render-alleyu.mjs 重新生成（img/ 文件名=页面名）
 4. 提交推送双远程：github `git@github.com:in1912/Alleyu.git` + gitea `https://gitea.in1912.cc/in1912/Alleyu.git`，push 后 ls-remote 核对

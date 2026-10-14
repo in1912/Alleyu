@@ -4,7 +4,7 @@
       <h2 style="margin: 0">📘 {{ guide?.title || '攻略生成中…' }}</h2>
       <div style="display: flex; gap: 8px; flex-wrap: wrap">
         <button v-if="streamed && !editing" class="btn ghost sm" @click="copy">复制全文</button>
-        <button v-if="status === 'done' && !editing" class="btn ghost sm" @click="doPrint">导出PDF</button>
+        <button v-if="status === 'done' && !editing" class="btn ghost sm" :disabled="pdfBusy" @click="exportPdf">{{ pdfBusy ? '生成中…' : '导出PDF' }}</button>
         <button v-if="status === 'done' && !editing" class="btn ghost sm" @click="openShare">分享</button>
         <button v-if="status === 'done' && !editing" class="btn ghost sm" @click="startEdit">编辑</button>
         <button v-if="status === 'error' || status === 'done'" class="btn ghost sm" @click="regen">重新生成</button>
@@ -85,7 +85,7 @@
 import { computed, onBeforeUnmount, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { marked } from 'marked';
-import { api, token, withToken } from '../api/index.js';
+import { api, token, withToken, downloadPdfFile } from '../api/index.js';
 import { cleanMd } from '../md.js';
 
 const route = useRoute();
@@ -220,8 +220,23 @@ async function del() {
   }
 }
 
-// ---- 导出 PDF（v1.6.0）：走浏览器打印（零依赖），打印 CSS 隐藏界面只留正文 ----
-// 先改 document.title 让默认文件名是攻略标题；print() 同步阻塞，结束后改回
+// ---- 导出 PDF（v1.6.1）：服务端 pdfkit 生成文件直接下载（不弹打印对话框）----
+// 服务器没中文字体时回 NO_FONT → 问一句回落浏览器打印（打印 CSS 仍在，是兜底不是主路径）
+const pdfBusy = ref(false);
+async function exportPdf() {
+  if (pdfBusy.value) return;
+  pdfBusy.value = true;
+  try {
+    await downloadPdfFile('/api/guides/' + id + '/pdf', (guide.value?.title || '攻略') + '.pdf');
+  } catch (e) {
+    if (e.code === 'NO_FONT') {
+      if (confirm(e.message + '\n\n点「确定」改用浏览器打印导出（打印对话框里选「另存为 PDF」）。')) doPrint();
+    } else alert(e.message);
+  } finally {
+    pdfBusy.value = false;
+  }
+}
+// 打印兜底（v1.6.0 主路径，现为无字体环境的回落）：打印 CSS 只留正文
 function doPrint() {
   const t = document.title;
   document.title = (guide.value?.title || '攻略') + ' - 游巷';

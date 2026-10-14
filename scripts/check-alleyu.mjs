@@ -450,6 +450,32 @@ try {
   r = await req('/api/share/' + stTok);
   ok(r.j.content && r.j.content.includes('编辑标记段'), '刷新后快照追上当前内容');
 
+  // ---- 导出 PDF（v1.6.1）：服务端 pdfkit 直出附件下载 ----
+  // 字体探针与本机环境走同一套（check 进程没有 DATA_DIR，系统字体路径是绝对的，够判可用性）
+  console.log('== 导出 PDF（v1.6.1） ==');
+  const requirePdf = createRequire(path.join(ROOT, 'package.json'));
+  let fontsAvail = false;
+  try { fontsAvail = !!requirePdf('./server/services/pdfService.js').findFonts(); } catch { /* 依赖缺失当没字体 */ }
+  if (!fontsAvail) {
+    console.log('  ⚠️ 本机无可用中文字体，PDF 断言跳过（端点逻辑由 401/404/409 部分覆盖）');
+  } else {
+    r = await req(`/api/guides/${gid}/pdf`, { token: u1 });
+    ok(r.status === 200 && r.text.startsWith('%PDF') && r.text.length > 8000, '本人导出 PDF（%PDF 文件 >8KB）');
+    ok((r.headers.get('content-type') || '').includes('application/pdf'), 'Content-Type: application/pdf');
+    const cd = r.headers.get('content-disposition') || '';
+    ok(cd.includes('attachment') && cd.includes("filename*=UTF-8''"), 'Content-Disposition 附件直下（attachment + filename*）');
+    r = await req(`/api/guides/${gid}/pdf`);
+    ok(r.status === 401, '未登录导出 PDF 401');
+    r = await req(`/api/guides/${gid}/pdf`, { token: admin2 });
+    ok(r.status === 404, '他人导出 PDF 404（攻略仅本人）');
+    r = await req('/api/share/' + dynTok + '/pdf');
+    ok(r.status === 200 && r.text.startsWith('%PDF') && (r.headers.get('content-disposition') || '').includes('attachment'), '分享页免登录导出 PDF（动态）');
+    r = await req('/api/share/' + stTok + '/pdf');
+    ok(r.status === 200 && r.text.startsWith('%PDF'), '分享页导出 PDF（静态快照）');
+    r = await req('/api/share/deadbeefdeadbeefdeadbeefdeadbeef/pdf');
+    ok(r.status === 404, '瞎编 token 要 PDF 404');
+  }
+
   // 越权与非法
   r = await req(`/api/guides/${gid}`, { token: admin2, method: 'PUT', body: { content: 'x'.repeat(100) } });
   ok(r.status === 404, '他人编辑攻略 404（admin 也不行，攻略仅本人）');
@@ -473,6 +499,8 @@ try {
   ok(r.status === 409, '生成中的攻略编辑 409');
   r = await req(`/api/guides/${hgid}/shares`, { token: u1, method: 'POST', body: { mode: 'dynamic' } });
   ok(r.status === 409, '生成中的攻略建分享 409');
+  r = await req(`/api/guides/${hgid}/pdf`, { token: u1 });
+  ok(r.status === 409, '生成中的攻略导出 PDF 409');
   await req(`/api/guides/${hgid}`, { token: u1, method: 'DELETE' }); // 清掉挂死攻略
   fakeHang.close();
   await req('/api/ai/global', { method: 'PUT', token: admin, body: { base_url: '', model: '', key: '' } });

@@ -5,6 +5,7 @@ const express = require('express');
 const crypto = require('crypto');
 const { db } = require('../db');
 const { generateGuide } = require('../services/guideService');
+const { renderGuidePdf } = require('../services/pdfService');
 const { globalConfig } = require('../services/aiService');
 
 const r = express.Router();
@@ -120,6 +121,24 @@ r.put('/:id', (req, res) => {
   if (!content.trim()) return res.status(400).json({ error: '正文不能为空' });
   db.prepare("UPDATE guides SET content=?, updated_at=datetime('now','localtime') WHERE id=?").run(content, g.id);
   res.json({ ok: true });
+});
+
+// ---- 导出 PDF（v1.6.1）：服务端 pdfkit 直出下载文件（用户明确不要浏览器打印）----
+// Content-Disposition: attachment → 前端 fetch→blob→a[download]，点击即得 .pdf 文件。
+r.get('/:id/pdf', async (req, res) => {
+  const g = db.prepare('SELECT id, title, content, status FROM guides WHERE id=? AND user_id=?').get(Number(req.params.id), req.user.id);
+  if (!g) return res.status(404).json({ error: '攻略不存在' });
+  if (g.status !== 'done') return res.status(409).json({ error: '生成完成后才能导出' });
+  try {
+    const buf = await renderGuidePdf(g.title || '攻略', g.content || '');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent((g.title || '攻略') + '.pdf')}`);
+    res.send(buf);
+  } catch (e) {
+    if (e && e.code === 'NO_FONT') return res.status(400).json({ error: e.message, code: 'NO_FONT' });
+    console.error('pdf export failed:', e);
+    res.status(500).json({ error: 'PDF 生成失败：' + (e.message || e) });
+  }
 });
 
 // ---- 分享链接（v1.6.0）：token 即能力凭证（32hex，可作废）----

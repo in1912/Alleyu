@@ -16,6 +16,9 @@ const { chromium } = require('playwright');
 
 const ROOT = path.resolve(new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
 const URL_BASE = process.env.ALLEYU_URL || 'http://localhost:9610';
+// PDF 下载断言的前提：服务器端有中文字体可出 PDF（无字体时端点回 400，跳过下载事件断言）
+let FONTS_OK = false;
+try { FONTS_OK = !!require(path.join(ROOT, 'server', 'services', 'pdfService.js')).findFonts(); } catch { /* 依赖缺失当没字体 */ }
 
 let server = null;
 if (!process.env.ALLEYU_URL) {
@@ -206,6 +209,17 @@ if (done && done.status === 'done') {
   const mdAfter = await page.locator('.md').innerText();
   ok(mdAfter.includes(marker), '保存编辑后正文即时更新（含追加段）');
 
+  // v1.6.1：攻略页导出 PDF = 直接下载文件（不再弹打印对话框）
+  if (FONTS_OK) {
+    const dlP = page.waitForEvent('download', { timeout: 25000 });
+    await page.locator('.gv-head button').filter({ hasText: '导出PDF' }).click();
+    const dl = await dlP;
+    ok((await dl.path()) !== null, '点「导出PDF」直接下载文件（浏览器下载事件）');
+    ok(dl.suggestedFilename().endsWith('.pdf'), '下载文件名以 .pdf 结尾（' + dl.suggestedFilename() + '）');
+  } else {
+    console.log('  ⚠️ 无中文字体，下载事件断言跳过');
+  }
+
   // 匿名新 context（无任何登录态）打开分享链接
   const anon = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   const apage = await anon.newPage();
@@ -218,6 +232,12 @@ if (done && done.status === 'done') {
   ok(anonText.includes(marker), '动态分享页跟随编辑（匿名读到追加段）');
   ok((await apage.locator('.share-top button').filter({ hasText: '导出 PDF' }).count()) === 1, '分享页有「导出 PDF」按钮');
   ok((await apage.locator('.side').count()) === 0, '分享页无侧栏（整页排版）');
+  if (FONTS_OK) {
+    const adlP = apage.waitForEvent('download', { timeout: 25000 });
+    await apage.locator('.share-top button').filter({ hasText: '导出 PDF' }).click();
+    const adl = await adlP;
+    ok((await adl.path()) !== null && adl.suggestedFilename().endsWith('.pdf'), '分享页匿名导出 PDF=直接下载文件');
+  }
   await apage.screenshot({ path: path.join(IMG_DIR, '分享页.png'), fullPage: false });
   await anon.close();
 }

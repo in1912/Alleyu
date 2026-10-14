@@ -39,3 +39,33 @@ export async function api(path, { method = 'GET', body } = {}) {
   if (!res.ok) throw new Error(j.error || `请求失败 HTTP ${res.status}`);
   return j;
 }
+
+// v1.6.1 导出 PDF：服务端生成 PDF 文件 → blob → a[download] 直接触发浏览器下载，
+// 不走 window.print（用户明确要「直接下载文件」）。没配字体的服务端回 400 {code:'NO_FONT'}，
+// 抛的 Error 带 .code，由调用方决定回落打印。分享页无 token 也能用（公开端点）。
+export async function downloadPdfFile(path, filename) {
+  const headers = {};
+  const t = token();
+  if (t) headers.Authorization = 'Bearer ' + t;
+  let res;
+  try {
+    res = await fetch(path.startsWith('/api') ? path : '/api' + path, { headers });
+  } catch {
+    throw new Error('网络请求失败（服务未启动或网络异常）');
+  }
+  if (!res.ok) {
+    let j = {};
+    try { j = await res.json(); } catch { /* 非 JSON 错误体 */ }
+    const e = new Error(j.error || `PDF 生成失败 HTTP ${res.status}`);
+    if (j.code) e.code = j.code;
+    throw e;
+  }
+  const blob = await res.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}

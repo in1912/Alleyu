@@ -41,7 +41,8 @@ r.post('/', async (req, res) => {
   // AI 闸门：admin 恒可，普通用户看 can_use_ai；且必须有可用配置（自己或全局）
   const gate = req.user.role === 'admin' || req.user.can_use_ai;
   if (!gate) return res.status(403).json({ error: '管理员未给你开通 AI 使用权限' });
-  if (process.env.ALLEYU_AI_STUB !== '1' && !personalConfig(req.user.id) && !globalConfig()) {
+  const stubbed = process.env.ALLEYU_AI_STUB === '1' || process.env.ALLEYU_AI_FORCE_STUB === '1';
+  if (!stubbed && !personalConfig(req.user.id) && !globalConfig()) {
     return res.status(400).json({ error: '尚无可用 AI 配置：可在「设置→AI 配置」填自己的接口，或等管理员配置全局 Key' });
   }
   const p = sanitizeParams(req.body || {});
@@ -78,7 +79,26 @@ r.get('/', (req, res) => {
 r.get('/:id', (req, res) => {
   const g = db.prepare('SELECT * FROM guides WHERE id=? AND user_id=?').get(Number(req.params.id), req.user.id);
   if (!g) return res.status(404).json({ error: '攻略不存在' });
-  res.json({ guide: { ...guideOut(g), content: g.content, params: JSON.parse(g.params_json || '{}') } });
+  res.json({ guide: { ...guideOut(g), content: g.content, params: JSON.parse(g.params_json || '{}'), prompt: g.prompt || '' } });
+});
+
+// 重新生成（v1.5.0）：失败/不满意的攻略用原参数重跑（详情页「复制全文」旁的入口）。
+// 原地重置不新建行（历史列表不膨胀）；权限与配置闸门和创建一致。
+r.post('/:id/regenerate', async (req, res) => {
+  const g = db.prepare('SELECT id, status FROM guides WHERE id=? AND user_id=?').get(Number(req.params.id), req.user.id);
+  if (!g) return res.status(404).json({ error: '攻略不存在' });
+  if (g.status === 'pending' || g.status === 'generating') {
+    return res.status(409).json({ error: '这篇攻略正在生成中，稍候' });
+  }
+  const gate = req.user.role === 'admin' || req.user.can_use_ai;
+  if (!gate) return res.status(403).json({ error: '管理员未给你开通 AI 使用权限' });
+  const stubbed = process.env.ALLEYU_AI_STUB === '1' || process.env.ALLEYU_AI_FORCE_STUB === '1';
+  if (!stubbed && !personalConfig(req.user.id) && !globalConfig()) {
+    return res.status(400).json({ error: '尚无可用 AI 配置：可在「设置→AI 配置」填自己的接口，或等管理员配置全局 Key' });
+  }
+  db.prepare("UPDATE guides SET status='pending', content='', images_json='[]', error='', stage='', model='', updated_at=datetime('now','localtime') WHERE id=?").run(g.id);
+  generateGuide(g.id);
+  res.json({ id: g.id });
 });
 
 r.delete('/:id', (req, res) => {

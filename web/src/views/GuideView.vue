@@ -4,6 +4,7 @@
       <h2 style="margin: 0">📘 {{ guide?.title || '攻略生成中…' }}</h2>
       <div style="display: flex; gap: 8px">
         <button v-if="streamed" class="btn ghost sm" @click="copy">复制全文</button>
+        <button v-if="status === 'error' || status === 'done'" class="btn ghost sm" @click="regen">重新生成</button>
         <a href="#/history" class="btn ghost sm">返回列表</a>
         <button class="btn danger sm" @click="del">删除</button>
       </div>
@@ -15,6 +16,8 @@
         <b>{{ stageLabel }}</b>
         <div class="genbar"><div class="fill" :style="{ width: pct + '%' }"></div></div>
         <p class="hint">{{ stageHint }}</p>
+        <!-- 真实内容的 3 行小窗（v1.5.0）：模型正在返回什么，直接看尾巴，不猜 -->
+        <pre class="peek" :class="{ dim: !peekText }">{{ peekText || '▌ 等待模型返回…' }}</pre>
       </div>
     </div>
     <div v-else-if="status === 'error'" class="card">
@@ -22,6 +25,16 @@
     </div>
 
     <div v-if="streamed" class="card md" v-html="html"></div>
+
+    <!-- 完整提示词（v1.5.0）：默认折叠，展开可看全文/复制——交代这次生成到底发了什么给模型 -->
+    <details v-if="guide && guide.prompt" class="card promptbox">
+      <summary>📋 本次生成的完整提示词（默认折叠）</summary>
+      <div class="pb-bar">
+        <span class="hint">系统提示词 + 用户提示词（含景点库/天气上下文与固定九模块框架）原文</span>
+        <button class="btn ghost sm" @click="copyPrompt">复制提示词</button>
+      </div>
+      <pre>{{ guide.prompt }}</pre>
+    </details>
   </div>
 </template>
 
@@ -59,7 +72,7 @@ const stageLabel = computed(() => {
   if (status.value === 'pending' || !s) return '排队中…';
   if (s === 'weather') return '正在获取天气数据…';
   if (s === 'connect') return '正在连接模型…';
-  if (/^retry/.test(s)) return '模型返回为空，自动重试中…';
+  if (/^retry/.test(s)) return '模型返回为空或过短，自动重试中…';
   if (s === 'write') return streamed.value ? `AI 正在撰写攻略正文…（已生成 ${streamed.value.length} 字）` : '模型已响应，等待首段内容…';
   if (s.startsWith('enrich')) return '图文增强：' + (s.split(':')[1] || '进行中') + '…';
   return '生成中…';
@@ -77,6 +90,9 @@ function onStage(s) {
   stage.value = s;
 }
 
+// 3 行实时小窗内容：模型返回的尾巴（截 220 字符，3 行装得下的量）
+const peekText = computed(() => (streamed.value ? streamed.value.slice(-220) : ''));
+
 marked.setOptions({ breaks: true, gfm: true });
 
 // 展示前清洗：①去掉桩模式横幅（老数据存过整行提示）②去掉九模块框架正文之外的
@@ -84,6 +100,7 @@ marked.setOptions({ breaks: true, gfm: true });
 function cleanMd(raw) {
   let t = String(raw || '');
   t = t.replace(/^>?\s*⚠?️?\s*这是\s*ALLEYU_AI_STUB=1\s*的本地桩输出[^\n]*\n?/gm, '');
+  t = t.replace(/<!--\s*alleyu:stub[^\n]*?-->\n?/g, ''); // 内部桩标记不进 DOM/复制（披露交给生成来源页脚）
   const lines = t.split('\n');
   const isHeading = (s) => /^#{1,6}\s/.test(s);
   if (lines.length && !isHeading(lines[0])) {
@@ -142,6 +159,27 @@ function copy() {
     alert('已复制全文');
   });
 }
+function copyPrompt() {
+  navigator.clipboard.writeText(guide.value?.prompt || '').then(() => {
+    alert('已复制完整提示词');
+  });
+}
+// 重新生成（v1.5.0）：失败红字时一键原参数重跑；已完成的会先确认（覆盖现有内容）
+async function regen() {
+  if (status.value === 'done' && !confirm('重新生成会用相同参数重跑并覆盖当前内容，确定？')) return;
+  try {
+    await api('/guides/' + id + '/regenerate', { method: 'POST' });
+    guide.value = guide.value ? { ...guide.value, prompt: '', error: '' } : guide.value;
+    status.value = 'pending';
+    streamed.value = '';
+    stage.value = '';
+    enrichSeen.value = [];
+    if (es) { es.close(); es = null; }
+    connect();
+  } catch (e) {
+    alert(e.message);
+  }
+}
 async function del() {
   if (!confirm('确定删除这份攻略？')) return;
   try {
@@ -179,4 +217,20 @@ loadGuide().then(() => {
   animation: stripeSlide 1s linear infinite;
 }
 @keyframes stripeSlide { to { transform: translateX(18px); } }
+/* 实时内容小窗：深色终端样式，固定 3 行（v1.5.0） */
+.peek {
+  margin: 4px 0 0; padding: 8px 12px; border-radius: 10px;
+  background: #0e1626; color: #9fc3e8;
+  font: 12px/1.7 ui-monospace, Consolas, 'Courier New', monospace;
+  max-height: 5.1em; overflow: hidden; white-space: pre-wrap; word-break: break-all;
+}
+.peek.dim { color: #5b7395; }
+/* 完整提示词折叠框（v1.5.0） */
+.promptbox summary { cursor: pointer; user-select: none; font-weight: 600; }
+.promptbox pre {
+  margin: 10px 0 0; padding: 12px; background: var(--card2); border-radius: 10px;
+  max-height: 340px; overflow: auto; white-space: pre-wrap; word-break: break-all;
+  font-size: 12px; line-height: 1.6;
+}
+.pb-bar { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
 </style>

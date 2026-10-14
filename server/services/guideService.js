@@ -8,6 +8,7 @@ const { db } = require('../db');
 const ai = require('./aiService');
 const amap = require('./amapService');
 const weather = require('./weatherService');
+const { fitView } = require('./mapFit');
 
 // ---------- 固定输出框架（用户原文，逐字保留） ----------
 const FRAMEWORK = `# 【目的地】X日游完整攻略
@@ -109,6 +110,11 @@ function setStage(guideId, stage) {
   try { db.prepare('UPDATE guides SET stage=? WHERE id=?').run(stage, guideId); } catch { /* 忽略 */ }
 }
 
+// 完整提示词落库（v1.5.0：详情页生成来源下方折叠框展示+复制，交代本次生成到底发了什么给模型）
+function setPrompt(guideId, prompt) {
+  try { db.prepare('UPDATE guides SET prompt=? WHERE id=?').run(prompt, guideId); } catch { /* 忽略 */ }
+}
+
 async function run(guideId) {
   const g = db.prepare('SELECT * FROM guides WHERE id=?').get(guideId);
   if (!g || g.status === 'done') return;
@@ -133,6 +139,11 @@ async function run(guideId) {
   // 流式生成，增量节流落库。
   // v1.4.0：空流自动重试（最多 3 次）——兼容网关偶发「首连即断/只回 DONE」的抽风，
   // 用户实测「再点一次就好」= 纯偶发，不该让人看到红字去手点重试。
+  // v1.5.0：重试闸门从「非空」收紧为「够长」——用户实测北京 7 日游只吐 600 字也算失败
+  // （九模块框架正常产出至少几千字，短=模型/网关截断，存下来是废稿）。
+  const minChars = Math.max(1200, (params.days || 3) * 300);
+  const messages = buildMessages(params, weatherCtx);
+  setPrompt(guideId, JSON.stringify(messages, null, 2));
   let content = '';
   let lastSave = Date.now();
   const save = (force) => {
@@ -147,23 +158,27 @@ async function run(guideId) {
     content = '';
     try {
       let first = true;
-      for await (const delta of ai.streamChat(cfg, buildMessages(params, weatherCtx), { maxTokens: 9000 })) {
+      for await (const delta of ai.streamChat(cfg, messages, { maxTokens: 9000 })) {
         if (first) { first = false; setStage(guideId, 'write'); }
         content += delta;
         save(false);
       }
     } catch (e) { streamErr = e; }
     if (streamErr && content.trim()) throw streamErr; // 半途断流：内容不完整仍按失败处理
-    if (content.trim()) break;
+    if (content.trim().length >= minChars) break;
     if (attempt < 3) {
       setStage(guideId, 'retry' + (attempt + 1));
-      console.warn(`[guide ${guideId}] AI 空返回（第 ${attempt} 次），1-2 秒后自动重试`);
+      console.warn(`[guide ${guideId}] AI 返回过短（${content.trim().length} 字 < ${minChars}，第 ${attempt} 次），自动重试`);
       await new Promise((r) => setTimeout(r, 1000 * attempt));
     }
   }
   save(true);
-  if (!content.trim()) {
-    throw streamErr || new Error('AI 返回了空内容（已自动重试 3 次仍为空；多为服务端/网关偶发，请稍后再试）');
+  if (content.trim().length < minChars) {
+    throw streamErr || new Error(
+      content.trim()
+        ? `AI 返回内容不完整（仅 ${content.trim().length} 字，不足 ${minChars} 字下限，已自动重试 3 次；多为模型/网关偶发截断，请点「重新生成」再试）`
+        : 'AI 返回了空内容（已自动重试 3 次仍为空；多为服务端/网关偶发，请点「重新生成」再试）'
+    );
   }
 
   // 图文增强（每步独立容错）
@@ -318,14 +333,16 @@ async function enrichGuide(guideId, params, content, weatherCtx) {
   if (pois.length >= 1) {
     setStage(guideId, 'enrich:绘制总览地图');
     try {
-      const center = params._lng != null ? { lng: params._lng, lat: params._lat } : { lng: pois[0].lng, lat: pois[0].lat };
+      const fallback = params._lng != null ? { lng: params._lng, lat: params._lat } : { lng: pois[0].lng, lat: pois[0].lat };
       const markers = pois.slice(0, 10).map((p, i) => ({ lng: p.lng, lat: p.lat, label: String(i + 1) }));
       let paths = [];
       if (pois.length >= 2) {
         const line = await journeyLine(pois);
         if (line.length >= 2) paths = [amap.downsample(line, 70)];
       }
-      const img = await fetchMapImage({ center, zoom: 11, markers, paths });
+      // v1.5.0：点位+连线包围盒自适应视野（固定 zoom11 会裁掉散开点位，北京实测长城都出框）
+      const fit = fitView([...pois, ...paths.flat()]) || { center: fallback, zoom: 11 };
+      const img = await fetchMapImage({ center: fit.center, zoom: fit.zoom, markers, paths });
       images.push({ type: 'overview', url: img.url });
       const idx = content.indexOf('\n## 二、');
       const anchor = idx >= 0 ? idx : content.length;
@@ -366,8 +383,9 @@ async function enrichGuide(guideId, params, content, weatherCtx) {
           const pts = amap.downsample(line, 50);
           const cLat = dayPois.reduce((s, p) => s + p.lat, 0) / dayPois.length;
           const cLng = dayPois.reduce((s, p) => s + p.lng, 0) / dayPois.length;
+          const fit = fitView([...dayPois, ...pts]) || { center: { lng: cLng, lat: cLat }, zoom: 12 };
           const img = await fetchMapImage({
-            center: { lng: cLng, lat: cLat }, zoom: 12,
+            center: fit.center, zoom: fit.zoom,
             markers: dayPois.map((p, i) => ({ lng: p.lng, lat: p.lat, label: String(i + 1) })),
             paths: [pts],
           });
@@ -386,20 +404,21 @@ async function enrichGuide(guideId, params, content, weatherCtx) {
     }
   }
 
-  // 5) 封面（v1.2.0 起弃用随机搜的地标照片）：单色全程路线地图，
-  //    所有要去的点位按行程顺序连线，前端以 grayscale 滤镜显示为单色
+  // 5) 封面（v1.2.0 起弃用随机搜的地标照片）：偏蓝单色全程路线地图，
+  //    所有要去的点位按行程顺序连线，前端以 sepia+hue-rotate 滤镜显示为蓝调（v1.5.0 用户定调不要黑白）
   if (pois.length >= 2) {
     setStage(guideId, 'enrich:生成封面地图');
     try {
       const line = await journeyLine(pois);
-      const center = params._lng != null
+      const fallback = params._lng != null
         ? { lng: params._lng, lat: params._lat }
         : {
             lng: pois.reduce((s, p) => s + p.lng, 0) / pois.length,
             lat: pois.reduce((s, p) => s + p.lat, 0) / pois.length,
           };
+      const fit = fitView([...pois, ...line]) || { center: fallback, zoom: 11 };
       const img = await fetchMapImage({
-        center, zoom: 11, ink: true,
+        center: fit.center, zoom: fit.zoom, ink: true,
         markers: pois.slice(0, 10).map((p, i) => ({ lng: p.lng, lat: p.lat, label: String(i + 1) })),
         paths: line.length >= 2 ? [amap.downsample(line, 70)] : [],
       });

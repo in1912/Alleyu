@@ -124,6 +124,8 @@ function addCol(table, col, decl) {
 addCol('cities', 'line', "TEXT NOT NULL DEFAULT '国内'");
 // v1.4.0：生成阶段（weather/connect/write/retryN/enrich:子步骤），SSE 推给前端做进度条
 addCol('guides', 'stage', "TEXT NOT NULL DEFAULT ''");
+// v1.5.0：完整提示词（buildMessages 的 JSON 快照，详情页生成来源下方折叠框展示+复制）
+addCol('guides', 'prompt', "TEXT NOT NULL DEFAULT ''");
 
 // ---------- settings 读写 ----------
 function getSetting(key) {

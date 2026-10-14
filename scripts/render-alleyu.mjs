@@ -1,9 +1,14 @@
 // 渲染自检（Playwright，借用工作台的 node_modules）：
 //   NODE_PATH=D:\cc\personal-workbench\node_modules node scripts/render-alleyu.mjs
-// 断言：登录 → 首页小猪场景在跑 → 输入框打字触发兔跳（bikerRoot transform 出现负 y）
+// 默认自起确定性桩服务器（ALLEYU_AI_FORCE_STUB=1，共享 data/ 的真实高德 Key 与城市库，
+// 独占 9610 端口）——起因 v1.5.0：本机 data/ 存着用户真 Key，过去 render 的「现场生成」
+// 一直在打真实 DeepSeek（首字 20s+、偶发空流），直播流断言随机红。
+// 设 ALLEYU_URL 可改打外部已运行的服务器（不自起、不强制桩）。
 import process from 'node:process';
 import path from 'node:path';
 import fs from 'node:fs';
+import net from 'node:net';
+import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -11,6 +16,34 @@ const { chromium } = require('playwright');
 
 const ROOT = path.resolve(new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
 const URL_BASE = process.env.ALLEYU_URL || 'http://localhost:9610';
+
+let server = null;
+if (!process.env.ALLEYU_URL) {
+  const portFree = await new Promise((resolve) => {
+    const s = net.connect(9610, '127.0.0.1');
+    s.on('connect', () => { s.destroy(); resolve(false); });
+    s.on('error', () => resolve(true));
+  });
+  if (!portFree) {
+    console.error('❌ 9610 端口被占用：render 需独占端口自起确定性桩服务器。先停掉现有服务，或设 ALLEYU_URL 指向它。');
+    process.exit(1);
+  }
+  server = spawn(process.execPath, ['--no-warnings', 'server/index.js'], {
+    cwd: ROOT,
+    env: { ...process.env, ALLEYU_AI_FORCE_STUB: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  server.stdout.on('data', () => {}); // 必须消费，防管道写满阻塞子进程
+  server.stderr.on('data', (d) => process.stderr.write('[server] ' + d));
+  process.on('exit', () => server.kill());
+  let up = false;
+  for (let i = 0; i < 50; i++) {
+    try { const r = await fetch(URL_BASE + '/api/health'); if (r.ok) { up = true; break; } } catch { /* 未就绪 */ }
+    await new Promise((r2) => setTimeout(r2, 200));
+  }
+  if (!up) { console.error('❌ 自起服务器 10s 内未就绪'); process.exit(1); }
+  console.log('已自起确定性桩服务器（FORCE_STUB，pid=' + server.pid + '）');
+}
 const IMG_DIR = path.join(ROOT, 'img');
 if (!fs.existsSync(IMG_DIR)) fs.mkdirSync(IMG_DIR, { recursive: true });
 
@@ -87,10 +120,10 @@ ok(true, '表单渲染');
 const tk = await page.evaluate(() => localStorage.getItem('alleyu_token') || '');
 const genRes = await fetch(URL_BASE + '/api/guides', {
   method: 'POST', headers: { Authorization: 'Bearer ' + tk, 'Content-Type': 'application/json' },
-  body: JSON.stringify({ destination: '杭州', days: 2 }),
+  body: JSON.stringify({ destination: '杭州', days: 2, mustVisits: ['西湖', '灵隐寺'] }),
 }).then((r) => r.json()).catch(() => null);
 let done = null;
-let genbarOk = false, stageTextOk = false;
+let genbarOk = false, stageTextOk = false, peekOk = false;
 if (genRes && genRes.id) {
   // v1.4.0：趁生成未完先进详情页——进度条 + 阶段说明词必须可见（桩+真高德 enrich 要半分钟，赶得上）
   await page.goto(URL_BASE + '/#/guide/' + genRes.id);
@@ -98,8 +131,14 @@ if (genRes && genRes.id) {
     await page.waitForSelector('.genbar .fill', { timeout: 8000 });
     genbarOk = true;
     const label = await page.locator('.status-card b').innerText();
-    stageTextOk = /排队|正在|重试|增强/.test(label);
+    // 「模型已响应，等待首段内容…」也是真阶段说明词（write 已开始、首段还没落库的窗口）
+    stageTextOk = /排队|正在|重试|增强|模型已响应/.test(label);
     await page.screenshot({ path: path.join(IMG_DIR, '生成中.png'), fullPage: false });
+    // v1.5.0：3 行实时内容小窗——模型开始返回后里面有真文字
+    try {
+      await page.waitForFunction(() => { const el = document.querySelector('.peek'); return el && el.textContent.trim().length > 20; }, null, { timeout: 20000 });
+      peekOk = true;
+    } catch { /* 没赶上流式窗口 */ }
   } catch { /* 没赶上生成窗口 */ }
   for (let i = 0; i < 240; i++) {
     await page.waitForTimeout(1000);
@@ -109,6 +148,7 @@ if (genRes && genRes.id) {
 }
 ok(genbarOk, '生成中：进度条可见（.genbar）');
 ok(stageTextOk, '生成中：阶段说明词显示（排队/正在/重试/增强）');
+ok(peekOk, '生成中：3 行实时内容小窗有模型返回的真文字');
 ok(done && done.status === 'done', '桩模式现场生成新攻略（≤240s，高德配图限速串行波动大）');
 let detailShotDone = false;
 if (done && done.status === 'done') {
@@ -119,9 +159,24 @@ if (done && done.status === 'done') {
   const firstAlt = await page.locator('.md img').first().getAttribute('alt');
   ok(firstAlt === '封面地图', '详情页第一张图=封面地图（不再用随机照片）');
   const filt = await page.evaluate(() => { const el = document.querySelector('.md img[alt="封面地图"]'); return el ? getComputedStyle(el).filter : ''; });
-  ok(/grayscale/.test(filt), '封面地图单色显示（grayscale 滤镜）');
+  ok(/sepia/.test(filt) && /hue-rotate/.test(filt), '封面地图偏蓝单色（sepia+hue-rotate 滤镜，非黑白）');
   const mdText2 = await page.locator('.md').innerText();
   ok(/生成来源/.test(mdText2) && /高德开放平台/.test(mdText2) && /Open-Meteo/.test(mdText2), '生成来源+链接渲染在攻略底部');
+  // v1.5.0：完整提示词折叠框（生成来源之下的最后一块）
+  const pbCount = await page.locator('.promptbox').count();
+  ok(pbCount === 1, '提示词折叠框存在（生成来源下方）');
+  if (pbCount === 1) {
+    const isOpen = await page.locator('.promptbox').evaluate((el) => el.open);
+    ok(isOpen === false, '提示词框默认折叠');
+    await page.locator('.promptbox summary').click();
+    await page.waitForTimeout(200);
+    const preLen = await page.locator('.promptbox pre').evaluate((el) => el.textContent.length);
+    ok(preLen > 500, '展开显示完整提示词（>500 字符）');
+    const cpBtn = await page.locator('.promptbox .pb-bar button').count();
+    ok(cpBtn === 1, '提示词框内复制按钮');
+    const regenBtn = await page.locator('.gv-head button').filter({ hasText: '重新生成' }).count();
+    ok(regenBtn === 1, '「重新生成」按钮在复制全文旁（失败/完成都可见）');
+  }
   await page.screenshot({ path: path.join(IMG_DIR, '攻略详情.png'), fullPage: false });
   detailShotDone = true;
 }
@@ -166,7 +221,9 @@ if (cards > 0) {
   if (!detailShotDone) await page.screenshot({ path: path.join(IMG_DIR, '攻略详情.png'), fullPage: false });
   ok(true, '攻略详情渲染（markdown）');
   const mdText = await page.locator('.md').innerText();
-  ok(!/本地桩输出|ALLEYU_AI_STUB/.test(mdText), '攻略正文无桩提示横幅');
+  // 桩模式下「生成来源」页脚如实标注「本地桩输出」是应该的；这里防的是正文顶部的桩横幅
+  const mdHtml = await page.locator('.md').innerHTML();
+  ok(!mdHtml.includes('alleyu:stub') && !/这是\s*ALLEYU_AI_STUB/.test(mdText), '攻略正文无桩提示横幅（来源页脚的如实标注除外）');
   // 生成中转圈图标：从已加载的 GuideView chunk 里验证是兔不是猪
   const gvUrl = await page.evaluate(() => performance.getEntriesByType('resource').map((e) => e.name).find((u) => /GuideView-[\w-]+\.js$/.test(u)));
   if (gvUrl) {
@@ -178,5 +235,6 @@ if (cards > 0) {
 }
 
 await browser.close();
+if (server) server.kill();
 console.log(`\n渲染自检：${pass} 通过，${fail} 失败`);
 process.exit(fail ? 1 : 0);

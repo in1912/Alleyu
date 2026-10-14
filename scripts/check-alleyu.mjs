@@ -4,6 +4,7 @@
 import { spawn } from 'node:child_process';
 import http from 'node:http';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -227,6 +228,50 @@ try {
   const resetText = firstContent ? JSON.parse(firstContent[1]).text : '';
   ok(resetText.includes('![封面地图](') && resetText.indexOf('![封面地图](') < 100, '快照含顶部封面地图（守在页上看完生成也拿得到）');
 
+  // ---- 生成中直播流（v1.5.0）----
+  // v1.4.0 快照协议只对「已完成」攻略验证过 reset/done；生成中的 delta 直播从未直接验过
+  // （render 曾在真 Key 环境跑，真实模型首字 20s+，直播断言形同虚设）。这里用慢速假 AI
+  // 把 write 阶段拉长到 ~4s，直连 SSE 断言 stage/delta 真的在流里滚动。
+  // 无人城=不在城市库 → 无坐标无月份 → 天气立即 mode:none，enrich 也无图可插，全程离线。
+  console.log('== 生成中直播流（慢速假 AI） ==');
+  const fakeAiSlow = http.createServer((qreq, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
+    const body = '# 【无人城】2日游完整攻略\n## 一、旅行总览\n' + '直播流慢速正文，逐段抵达。'.repeat(140) + '\n\n## 九、可选拓展\n收尾。\n';
+    const parts = body.match(/[\s\S]{1,60}/g) || [];
+    let i = 0;
+    const t = setInterval(() => {
+      if (i < parts.length) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: parts[i++] } }] })}\n\n`);
+      } else {
+        clearInterval(t);
+        res.end('data: [DONE]\n\n');
+      }
+    }, 150);
+  });
+  await new Promise((resolve) => fakeAiSlow.listen(0, '127.0.0.1', resolve));
+  r = await req('/api/ai/global', { method: 'PUT', token: admin, body: { base_url: `http://127.0.0.1:${fakeAiSlow.address().port}`, model: 'fake-slow-model', key: 'sk-fake-slow' } });
+  ok(r.status === 200, '全局配置指向慢速假 AI');
+  r = await req('/api/guides', { method: 'POST', token: u1, body: { destination: '无人城', days: 2 } });
+  const lgid = r.j.id;
+  ok(r.status === 200 && lgid, '创建无人城攻略（慢速假 AI，无坐标全离线）');
+  const live = await sseCollect(`/api/guides/${lgid}/stream?token=${encodeURIComponent(u1)}`, 9000);
+  const stageEvs = live.filter(([nm]) => nm === 'stage').map(([, d]) => { try { return JSON.parse(d).stage; } catch { return ''; } });
+  const deltas = live.filter(([nm]) => nm === 'delta').map(([, d]) => { try { return JSON.parse(d).text; } catch { return ''; } });
+  const resetEv = live.find(([nm]) => nm === 'reset');
+  ok(stageEvs.includes('write'), '直播流里看到 write 阶段事件', '见到：' + stageEvs.join(','));
+  ok(deltas.length >= 2, '直播流 delta 事件成串滚动（600ms 节流落库→逐段推送）', `delta=${deltas.length}`);
+  const assembled = (resetEv ? JSON.parse(resetEv[1]).text : '') + deltas.join('');
+  ok(assembled.includes('直播流慢速正文') && assembled.length >= 300, 'reset+delta 拼回正文（believed 基线协议）', `len=${assembled.length}`);
+  let lg = null;
+  for (let i = 0; i < 30; i++) {
+    await sleep(300);
+    const g = await req(`/api/guides/${lgid}`, { token: u1 });
+    if (g.j.guide && (g.j.guide.status === 'done' || g.j.guide.status === 'error')) { lg = g.j.guide; break; }
+  }
+  ok(lg && lg.status === 'done' && lg.content.length >= 1200, '慢速假 AI 攻略完成且够长');
+  fakeAiSlow.close();
+  await req('/api/ai/global', { method: 'PUT', token: admin, body: { base_url: '', model: '', key: '' } });
+
   // ---- 国际线攻略（高德无海外底图 → 不插图，其余照常） ----
   console.log('== 国际线攻略（巴黎，桩 AI） ==');
   r = await req('/api/guides', { method: 'POST', token: u1, body: { destination: '巴黎', days: 2, mustVisits: ['卢浮宫', '埃菲尔铁塔'] } });
@@ -256,8 +301,9 @@ try {
     if (hits === 1) {
       res.end('data: [DONE]\n\n'); // 首连即空：复现偶发故障
     } else {
-      // 分 3 段各隔 400ms：让 write 阶段持续 >1s，轮询才能观察到（一次性吐完只有几毫秒）
-      const parts = ['## 一、旅行总览\n', '重试后拿到的正文。', '东京一日走完浅草与涩谷。\n'];
+      // 分段各隔 400ms：让 write 阶段持续 >1s，轮询才能观察到（一次性吐完只有几毫秒）。
+      // 内容要 ≥1200 字（v1.5.0 过短闸门：days=1 下限 1200，短稿会被当废稿重试）
+      const parts = ['# 【东京】1日游完整攻略\n## 一、旅行总览\n', '重试后拿到的正文。', '东京一日走完浅草与涩谷。'.repeat(120) + '\n'];
       let i = 0;
       const t = setInterval(() => {
         if (i < parts.length) {
@@ -296,6 +342,78 @@ try {
   await req('/api/ai/global', { method: 'PUT', token: admin, body: { base_url: '', model: '', key: '' } });
   r = await req('/api/ai/status', { token: admin });
   ok(r.j.effective_source === 'none', '清空假配置（不影响后续段落）');
+
+  // ---- 过短内容自动重试 + 重新生成 + 提示词落库（v1.5.0） ----
+  // 复现用户实测「北京 7 日游只生成 600 字」：流正常结束但严重偏短=废稿，必须重试；
+  // 3 次全短 → error（详情页出现「重新生成」按钮）→ 原参数重跑成功。
+  console.log('== 过短重试 + 重新生成 + 提示词（假 AI） ==');
+  let mode = 'short'; // short=过短稿 / empty=永远空 / full=合格长文
+  let hits2 = 0;
+  const fakeAi2 = http.createServer((qreq, res) => {
+    hits2++;
+    res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
+    if (mode === 'empty') { res.end('data: [DONE]\n\n'); return; }
+    const body = mode === 'short'
+      ? '# 【东京】1日游完整攻略\n## 一、旅行总览\n只有几句话，模拟北京那种被网关截断的废稿。\n'
+      : '# 【东京】1日游完整攻略\n## 一、旅行总览\n' + '行程正文，浅草到涩谷。'.repeat(200) + '\n\n## 九、可选拓展\n收尾。\n';
+    const parts = body.match(/[\s\S]{1,300}/g) || [];
+    let i = 0;
+    const t = setInterval(() => {
+      if (i < parts.length) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: parts[i++] } }] })}\n\n`);
+      } else {
+        clearInterval(t);
+        res.end('data: [DONE]\n\n');
+      }
+    }, 120);
+  });
+  await new Promise((resolve) => fakeAi2.listen(0, '127.0.0.1', resolve));
+  r = await req('/api/ai/global', { method: 'PUT', token: admin, body: { base_url: `http://127.0.0.1:${fakeAi2.address().port}`, model: 'fake-short-model', key: 'sk-fake-short' } });
+  ok(r.status === 200, '全局配置指向第二个假 AI');
+  r = await req('/api/guides', { method: 'POST', token: u1, body: { destination: '东京', days: 1 } });
+  const sgid = r.j.id;
+  ok(r.status === 200 && sgid, '创建东京攻略（过短场景）');
+  let sg = null;
+  for (let i = 0; i < 60; i++) {
+    await sleep(300);
+    const g = await req(`/api/guides/${sgid}`, { token: u1 });
+    if (g.j.guide && (g.j.guide.status === 'done' || g.j.guide.status === 'error')) { sg = g.j.guide; break; }
+  }
+  ok(hits2 === 3, '过短稿自动重试满 3 次（不存废稿）', `hits2=${hits2}`);
+  ok(sg && sg.status === 'error' && /不完整|过短/.test(sg.error || ''), '3 次全短 → 报错且话里带原因', sg ? sg.error : '超时');
+  // 提示词已随首次尝试落库（即使失败也交代发了什么）
+  ok(sg && sg.prompt && sg.prompt.includes('专业旅行规划师') && sg.prompt.includes('东京'), '完整提示词落库（详情接口可见）');
+  r = await req('/api/guides', { token: u1 });
+  ok(!('prompt' in (r.j.guides[0] || {})), '列表接口不背提示词（只有详情给）');
+  // 重新生成：换 full 模式，原参数原地重跑
+  mode = 'full';
+  r = await req(`/api/guides/${sgid}/regenerate`, { method: 'POST', token: u1 });
+  ok(r.status === 200, 'POST /regenerate 接受（失败攻略）');
+  let rg2 = null;
+  for (let i = 0; i < 60; i++) {
+    await sleep(300);
+    const g = await req(`/api/guides/${sgid}`, { token: u1 });
+    if (g.j.guide && (g.j.guide.status === 'done' || g.j.guide.status === 'error')) { rg2 = g.j.guide; break; }
+  }
+  ok(rg2 && rg2.status === 'done' && rg2.content.includes('行程正文'), '重新生成后出合格长文', rg2 ? rg2.error : '超时');
+  r = await req(`/api/guides/${sgid}/regenerate`, { method: 'POST', token: u1 });
+  ok(r.status === 200 || r.status === 409, '对已完成攻略可重生成（409=正好还在收尾）', `status=${r.status}`);
+  fakeAi2.close();
+  await req('/api/ai/global', { method: 'PUT', token: admin, body: { base_url: '', model: '', key: '' } });
+
+  // ---- 地图视野自适应（mapFit 纯函数，v1.5.0） ----
+  console.log('== 地图视野自适应 ==');
+  const require2 = createRequire(import.meta.url);
+  const { fitView } = require2(path.join(ROOT, 'server', 'services', 'mapFit.js'));
+  const bj = fitView([
+    { lng: 116.024, lat: 40.359 }, // 八达岭长城（北京散点最北）
+    { lng: 116.414, lat: 39.883 }, // 天坛（最南）
+  ]);
+  ok(bj && bj.zoom <= 10 && bj.zoom >= 4, '北京南北散点 → zoom 自适应到 ≤10（固定 11 裁点的老问题）', JSON.stringify(bj));
+  ok(bj && Math.abs(bj.center.lat - (40.359 + 39.883) / 2) < 0.01, '中心=包围盒中心（不再钉在城市中心）');
+  const single = fitView([{ lng: 116.4, lat: 39.9 }]);
+  ok(single && single.zoom === 16, '单点 → 顶格 zoom16（最小跨度防失焦）', JSON.stringify(single));
+  ok(fitView([]) === null, '空点位 → null（调用方回落）');
 
   // ---- 在线（真实外网） ----
   if (ONLINE) {

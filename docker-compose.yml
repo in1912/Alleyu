@@ -1,0 +1,17 @@
+services:
+  alleyu:
+    build: .
+    container_name: alleyu
+    restart: unless-stopped
+    ports:
+      - '9610:9610'
+    environment:
+      # 首个管理员（只在空库时创建），部署后请改密码
+      DEFAULT_ADMIN: admin
+      DEFAULT_ADMIN_PASSWORD: admin123
+      # 高德 Key 也可在这里注入（入库后以库内为准）
+      # AMAP_KEY: REMOVED-PRIVATE-AMAP-KEY
+      # 桩模式（测试用，不要在生产开）
+      # ALLEYU_AI_STUB: '1'
+    volumes:
+      - ./data:/app/data

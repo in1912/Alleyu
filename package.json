@@ -1,0 +1,21 @@
+{
+  "name": "alleyu",
+  "version": "1.0.0",
+  "private": true,
+  "description": "游巷——AI引导式旅游攻略：图文并茂、高德路线图、天气研判",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node --no-warnings server/index.js",
+    "dev": "node --no-warnings server/index.js",
+    "build:web": "cd web && npm install && npm run build",
+    "check": "node scripts/check-alleyu.mjs",
+    "check:online": "node scripts/check-alleyu.mjs --online",
+    "render": "node scripts/render-alleyu.mjs"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}

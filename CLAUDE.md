@@ -1,0 +1,47 @@
+# CLAUDE.md
+
+本文件给 Claude Code 提供本仓库的作业指引。
+
+## 项目
+
+游巷 Alleyu — 自托管 AI 旅行攻略生成器（Express + node:sqlite + Vue3）。架构完全模仿 D:\cc\personal-workbench（工作台）：同样的 latestDist 静态服务、Bearer+?token= 双通道鉴权、EXEMPT 免登录前缀、allowed_pages 页面白名单。改本项目前若不熟悉这些模式，先看工作台对应实现。
+
+## 常用命令
+
+```bash
+npm start                                     # 起 9610（start.bat 同效）；Node >= 22.5（node:sqlite）
+ALLEYU_AI_STUB=1 node server/index.js         # 桩 AI 模式（不调外网）
+node scripts/check-alleyu.mjs                 # 离线自检 36 项（独立临时 DATA_DIR，端口 9690）
+node scripts/check-alleyu.mjs --online        # +3 项真实高德/Open-Meteo 断言
+NODE_PATH=D:\cc\personal-workbench\node_modules node scripts/render-alleyu.mjs   # Playwright 渲染自检（先起 9610）
+cd web && npm run build                       # 前端 → dist/<时间戳>/ + .latest
+```
+
+Windows 注意：npm 卡住加 `--registry=https://registry.npmmirror.com`；重启服务用 `netstat -ano | grep ':9610'` 找 PID 再 `taskkill //F //PID <pid>`，**绝不要 `taskkill //IM node.exe`**（会杀用户其它 node 进程）。
+
+## 数据与密钥
+
+- 一切运行时数据在 `data/`（gitignore）：`alleyu.sqlite`、`.secret`（AES 密钥）、`mapimg/` 地图缓存。**amap key 与用户 AI key 都在库里，data/ 永不入 git。**
+- AI key 落库 AES-256-GCM（`enc:v1:iv:tag:data`），接口只回 has_key。优先级：个人(base_url+model+key 全配齐) → 全局(settings) → 无。
+- 默认管理员 admin/admin123 仅空库首启生效；生产改密码。
+
+## 关键实现事实
+
+- **node:sqlite 坑**：SQL 字符串字面量必须单引号；占位符个数必须精确；加列用 addCol 幂等模式；PRAGMA journal_mode=DELETE + busy_timeout + 事务包裹在 db.js。
+- **EXEMPT 是相对路径**：`app.use('/api')` 内 req.path 不带 /api 前缀，EXEMPT=['auth/login','health','system-info','amap/mapimg','amap/photo']；system-info 另在顶层注册。
+- **SSE=查库**：生成写库节流 ~600ms，stream 端点 400ms 轮询推 delta；前端 GuideView 依赖 `streamed` ref（不是 content）。
+- **高德 staticmap paths 格式**（实测验证过）：`8,0x3f7d5c,0.9,,:lng,lat;lng,lat` — 冒号在点串前、分号隔点、竖线隔多条线。免费 key 3 QPS → amapService 全局 350ms 串行节流，别拆。
+- 照片代理 `/api/amap/photo?u=` 有域名白名单（amap/autonavi/mypeople/gaode 系）。
+- 天气走 Open-Meteo 免 key：预报 16 天；历史用 archive 的 monthStats（一次多年调用+客户端同月过滤，sampleDays≥20 才可信）。预警是规则研判，UI 必须带"非官方预警"标注。
+- 九模块框架模板在 guideService.js 的 FRAMEWORK 常量（用户原话模板，勿改结构）；提示词里要求 `### Day N｜主题` 标题格式，splitDays 靠它切天。
+- 桩模式：ALLEYU_AI_STUB=1 同时放行 guideRoutes 的 AI 权限闸门（否则没配 key 时 400）。
+- guides 严格 user_id 隔离（admin 也读不到他人的，by design）；城市/景点库全局共享。
+- 前端 dist 随 git 分发（.gitignore 不忽略 web/dist/），Dockerfile COPY 依赖它；改前端必须 rebuild + commit。
+
+## 发版收尾清单
+
+1. 两个自检全绿（check 36/36 或 --online 39/39；render 15/15）
+2. 改了前端 → rebuild，确认 dist/.latest 指向新目录
+3. README 截图用 render-alleyu.mjs 重新生成（img/ 文件名=页面名）
+4. 提交推送双远程：github `git@github.com:in1912/Alleyu.git` + gitea `https://gitea.in1912.cc/in1912/Alleyu.git`，push 后 ls-remote 核对
+5. 临时文件清理：boot.log、login.json、_spec_extract.txt 等不入库（后两者已在 .gitignore）

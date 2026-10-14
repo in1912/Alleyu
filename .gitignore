@@ -1,0 +1,10 @@
+node_modules/
+data/
+web/node_modules/
+Logs/
+*.log
+*.zip
+.DS_Store
+# 首页场景的原始素材（开发参考，不入库）
+cy.html
+_spec_extract.txt

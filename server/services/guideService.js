@@ -119,10 +119,10 @@ async function run(guideId) {
   const g = db.prepare('SELECT * FROM guides WHERE id=?').get(guideId);
   if (!g || g.status === 'done') return;
   const params = JSON.parse(g.params_json || '{}');
-  let cfg = ai.resolveConfig(g.user_id);
+  let cfg = ai.resolveConfig();
   if (!cfg && process.env.ALLEYU_AI_STUB === '1') cfg = { source: 'stub', baseUrl: '', model: 'stub', key: '' };
   if (!cfg) {
-    throw new Error('当前没有可用的 AI 配置：请先在「设置→AI 配置」填写自己的接口，或联系管理员配置全局 Key 并开通使用权限');
+    throw new Error('当前没有可用的 AI 配置：请管理员在「设置→全局配置」填写接口与 Key，并给你开通使用权限');
   }
 
   // 天气上下文（生成前抓一次，流式期间与增强共用）
@@ -197,7 +197,7 @@ async function run(guideId) {
 
 // 生成来源块：AI 模型出处 + 地图/天气数据来源链接（v1.2.0 用户要求）
 function sourceFooter(cfg) {
-  const srcLabel = { personal: '我的个人接口', global: '管理员全局接口', stub: '本地桩输出，非真实攻略' }[cfg.source] || '未知来源';
+  const srcLabel = { global: '管理员全局接口', stub: '本地桩输出，非真实攻略' }[cfg.source] || '未知来源';
   const ts = new Date().toLocaleString('zh-CN', { hour12: false });
   return `\n\n---\n\n## 生成来源\n\n- **AI 模型**：\`${cfg.model || '未知'}\`（${srcLabel}，OpenAI 兼容格式）\n- **地图与点位**：[高德开放平台](https://lbs.amap.com)（POI 检索 · 静态地图 · 实景照片）\n- **天气数据**：[Open-Meteo](https://open-meteo.com)（16 天预报 + 历史同月推演）\n- 内容由 AI 生成，请以实地与官方信息为准。生成时间：${ts}\n`;
 }

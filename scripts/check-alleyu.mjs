@@ -151,23 +151,27 @@ try {
   r = await req(`/api/cities/${parisId}/attractions`, { token: admin });
   ok(r.j.attractions.length >= 4, '巴黎著名景点直接入库（≥4）');
 
-  // ---- AI 配置与 Key 优先级 ----
-  console.log('== AI 配置（加密 + 优先级） ==');
+  // ---- AI 配置（v1.6.0 起全站只有管理员全局一份，个人配置已下线） ----
+  console.log('== AI 配置（全局唯一 + 个人配置下线） ==');
   r = await req('/api/ai/global', { method: 'PUT', token: admin, body: { base_url: 'https://api.example.com/v1', model: 'test-model', key: 'sk-global-test' } });
   ok(r.status === 200, 'admin 写全局 AI 配置');
   r = await req('/api/ai/global', { token: admin });
   ok(r.j.has_key === true && !JSON.stringify(r.j).includes('sk-global-test'), '全局配置回读只报 has_key，不回明文');
-  r = await req('/api/ai/config', { method: 'PUT', token: admin, body: { base_url: 'https://personal.example.com/v1', model: 'my-model', key: 'sk-personal-test' } });
-  ok(r.status === 200, '写个人 AI 配置');
-  r = await req('/api/ai/status', { token: admin });
-  ok(r.j.personal && r.j.effective_source === 'personal', 'Key 优先级：个人优先');
-  r = await req('/api/ai/config', { method: 'PUT', token: admin, body: { base_url: '', model: '', key: '' } });
-  r = await req('/api/ai/status', { token: admin });
-  ok(r.j.effective_source === 'global', '清空个人后回落全局');
+  r = await req('/api/ai/global', { method: 'PUT', token: admin, body: { base_url: 'https://api.example.com/v1', model: 'test-model', key: '  sk-global-test \n' } });
+  ok(r.status === 200, 'Key 带首尾空白/换行也收（cleanKey 全剥离）');
   r = await req('/api/ai/global', { token: u1 });
   ok(r.status === 403, '普通用户读全局配置 403');
+  // 个人配置端点已删（v1.6.0）：全部 404
+  r = await req('/api/ai/config', { method: 'PUT', token: admin, body: { base_url: 'https://personal.example.com/v1', model: 'my-model', key: 'sk-personal-test' } });
+  ok(r.status === 404, '个人配置 PUT 已下线（404）');
   r = await req('/api/ai/config', { token: u1 });
-  ok(r.status === 200 && r.j.has_key === false && r.j.base_url === '', '普通用户读自己配置（空）');
+  ok(r.status === 404, '个人配置 GET 已下线（404）');
+  r = await req('/api/ai/test', { method: 'POST', token: admin, body: {} });
+  ok(r.status === 404, '个人配置 /ai/test 已下线（404）');
+  r = await req('/api/ai/status', { token: admin });
+  ok(r.status === 200 && r.j.effective_source === 'global' && r.j.personal === undefined, 'status 只认全局（无 personal 字段）');
+  r = await req('/api/auth/me', { token: u1 });
+  ok(r.j.user && r.j.user.has_personal_ai === undefined, '用户对象不再暴露 has_personal_ai');
 
   // ---- 高德 Key 设置 ----
   console.log('== 高德 Key 设置 ==');
@@ -234,7 +238,13 @@ try {
   // 把 write 阶段拉长到 ~4s，直连 SSE 断言 stage/delta 真的在流里滚动。
   // 无人城=不在城市库 → 无坐标无月份 → 天气立即 mode:none，enrich 也无图可插，全程离线。
   console.log('== 生成中直播流（慢速假 AI） ==');
+  let thinkingSeen = false; // v1.6.0：请求体必须带 thinking.type=disabled（推理模型把 token 吃进思考链 → 正文空）
   const fakeAiSlow = http.createServer((qreq, res) => {
+    let raw = '';
+    qreq.on('data', (c) => { raw += c; });
+    qreq.on('end', () => {
+      try { const b = JSON.parse(raw); if (b.thinking && b.thinking.type === 'disabled') thinkingSeen = true; } catch { /* 忽略 */ }
+    });
     res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
     const body = '# 【无人城】2日游完整攻略\n## 一、旅行总览\n' + '直播流慢速正文，逐段抵达。'.repeat(140) + '\n\n## 九、可选拓展\n收尾。\n';
     const parts = body.match(/[\s\S]{1,60}/g) || [];
@@ -269,6 +279,7 @@ try {
     if (g.j.guide && (g.j.guide.status === 'done' || g.j.guide.status === 'error')) { lg = g.j.guide; break; }
   }
   ok(lg && lg.status === 'done' && lg.content.length >= 1200, '慢速假 AI 攻略完成且够长');
+  ok(thinkingSeen, '生成请求体带 thinking.type=disabled（推理模型思考链根治）');
   fakeAiSlow.close();
   await req('/api/ai/global', { method: 'PUT', token: admin, body: { base_url: '', model: '', key: '' } });
 
@@ -400,6 +411,84 @@ try {
   ok(r.status === 200 || r.status === 409, '对已完成攻略可重生成（409=正好还在收尾）', `status=${r.status}`);
   fakeAi2.close();
   await req('/api/ai/global', { method: 'PUT', token: admin, body: { base_url: '', model: '', key: '' } });
+
+  // ---- 分享链接 + 正文编辑（v1.6.0）----
+  // 用最早那份桩生成的杭州攻略 gid（done，之后无人再动它；sgid 在上一节被二次
+  // regenerate 后假 AI 已关，状态不可靠）
+  console.log('== 分享链接与正文编辑（v1.6.0） ==');
+  r = await req(`/api/guides/${gid}`, { token: u1 });
+  ok(r.status === 200 && r.j.guide.status === 'done' && r.j.guide.content.length > 500, '分享对象=桩生成的 done 攻略');
+  const baseContent = r.j.guide.content;
+  r = await req(`/api/guides/${gid}/shares`, { token: u1 });
+  ok(r.status === 200 && r.j.shares.length === 0, '分享列表初始为空');
+  r = await req(`/api/guides/${gid}/shares`, { token: u1, method: 'POST', body: { mode: 'dynamic' } });
+  ok(r.status === 200 && /^[0-9a-f]{32}$/.test(r.j.token) && r.j.mode === 'dynamic' && r.j.url === '/#/s/' + r.j.token, '创建动态分享（32hex 能力链接 + url）');
+  const dynTok = r.j.token;
+  r = await req(`/api/guides/${gid}/shares`, { token: u1, method: 'POST', body: { mode: 'static' } });
+  ok(r.status === 200 && r.j.mode === 'static' && r.j.snapshot_len > 100, '创建静态分享（创建即落快照）');
+  const stTok = r.j.token;
+  r = await req(`/api/guides/${gid}/shares`, { token: u1, method: 'POST', body: { mode: '乱填' } });
+  ok(r.status === 200 && r.j.mode === 'dynamic', '非法 mode 兜底为 dynamic');
+
+  // 公开访问：EXEMPT 免登录通道，响应只给标题/模式/正文/时间
+  r = await req('/api/share/' + dynTok);
+  ok(r.status === 200 && r.j.title.includes('杭州') && r.j.mode === 'dynamic' && r.j.content.length > 500, '公开页免登录读动态分享');
+  ok(!('prompt' in r.j) && !('images' in r.j) && !('params' in r.j) && !('destination' in r.j), '公开响应不带参数/提示词/图集（最小暴露）');
+  r = await req('/api/share/' + stTok);
+  ok(r.status === 200 && r.j.content.length > 500, '公开页读静态快照');
+
+  // 编辑正文：动态跟随、静态冻结、可手动刷新
+  const edited = baseContent + '\n\n## 编辑标记段\n这是手动编辑后追加的内容。\n';
+  r = await req(`/api/guides/${gid}`, { token: u1, method: 'PUT', body: { content: edited } });
+  ok(r.status === 200 && r.j.ok === true, '保存编辑后的 Markdown 原文');
+  r = await req('/api/share/' + dynTok);
+  ok(r.j.content && r.j.content.includes('编辑标记段'), '动态链接自动跟随编辑');
+  r = await req('/api/share/' + stTok);
+  ok(r.j.content && !r.j.content.includes('编辑标记段'), '静态快照冻结不动');
+  r = await req(`/api/guides/${gid}/shares/${stTok}`, { token: u1, method: 'PUT' });
+  ok(r.status === 200 && r.j.snapshot_len === edited.length, '手动刷新静态快照（回新 snapshot_len）');
+  r = await req('/api/share/' + stTok);
+  ok(r.j.content && r.j.content.includes('编辑标记段'), '刷新后快照追上当前内容');
+
+  // 越权与非法
+  r = await req(`/api/guides/${gid}`, { token: admin2, method: 'PUT', body: { content: 'x'.repeat(100) } });
+  ok(r.status === 404, '他人编辑攻略 404（admin 也不行，攻略仅本人）');
+  r = await req(`/api/guides/${gid}`, { token: u1, method: 'PUT', body: { content: '   ' } });
+  ok(r.status === 400, '空内容编辑 400');
+  r = await req(`/api/guides/${gid}/shares`, { method: 'POST', body: { mode: 'dynamic' } });
+  ok(r.status === 401, '未登录建分享 401');
+  r = await req(`/api/guides/${gid}/shares`, { token: admin2 });
+  ok(r.status === 404, '他人看分享列表 404');
+  r = await req(`/api/guides/${gid}/shares/${dynTok}`, { token: admin2, method: 'DELETE' });
+  ok(r.status === 404, '他人撤销分享 404');
+
+  // 生成中的攻略不能编辑/分享（409）：挂一只永不响应的假 AI 把攻略钉在 generating
+  const fakeHang = http.createServer(() => { /* 收下请求，永不响应 */ });
+  await new Promise((resolve) => fakeHang.listen(0, '127.0.0.1', resolve));
+  await req('/api/ai/global', { method: 'PUT', token: admin, body: { base_url: `http://127.0.0.1:${fakeHang.address().port}`, model: 'hang-model', key: 'sk-hang' } });
+  r = await req('/api/guides', { method: 'POST', token: u1, body: { destination: '无人城', days: 1 } });
+  const hgid = r.j.id;
+  await sleep(1500);
+  r = await req(`/api/guides/${hgid}`, { token: u1, method: 'PUT', body: { content: '编辑生成中的攻略'.repeat(30) } });
+  ok(r.status === 409, '生成中的攻略编辑 409');
+  r = await req(`/api/guides/${hgid}/shares`, { token: u1, method: 'POST', body: { mode: 'dynamic' } });
+  ok(r.status === 409, '生成中的攻略建分享 409');
+  await req(`/api/guides/${hgid}`, { token: u1, method: 'DELETE' }); // 清掉挂死攻略
+  fakeHang.close();
+  await req('/api/ai/global', { method: 'PUT', token: admin, body: { base_url: '', model: '', key: '' } });
+
+  // 撤销 + 删攻略级联
+  r = await req(`/api/guides/${gid}/shares/${stTok}`, { token: u1, method: 'DELETE' });
+  ok(r.status === 200 && r.j.revoked === true, '撤销静态分享');
+  r = await req('/api/share/' + stTok);
+  ok(r.status === 404, '撤销后公开访问 404');
+  r = await req('/api/share/deadbeefdeadbeefdeadbeefdeadbeef');
+  ok(r.status === 404, '瞎编的 token 404');
+  r = await req(`/api/guides/${gid}/shares`, { token: u1 });
+  ok(r.j.shares.length === 2, '列表剩 2 条（动态 + 兜底 dynamic）');
+  await req(`/api/guides/${gid}`, { token: u1, method: 'DELETE' });
+  r = await req('/api/share/' + dynTok);
+  ok(r.status === 404, '删攻略后分享一并失效（手动级联）');
 
   // ---- 地图视野自适应（mapFit 纯函数，v1.5.0） ----
   console.log('== 地图视野自适应 ==');

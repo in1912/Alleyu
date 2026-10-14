@@ -6,7 +6,7 @@
     </div>
     <div class="card">
       <table class="tb">
-        <thead><tr><th>用户</th><th>角色</th><th>AI</th><th>页面权限</th><th>自己的AI</th><th>创建时间</th><th>操作</th></tr></thead>
+        <thead><tr><th>用户</th><th>角色</th><th>AI</th><th>页面权限</th><th>创建时间</th><th>操作</th></tr></thead>
         <tbody>
           <tr v-for="u in users" :key="u.id">
             <td><b>{{ u.username }}</b><small v-if="u.display_name" class="hint">（{{ u.display_name }}）</small></td>
@@ -19,7 +19,6 @@
               <span v-else-if="!(u.allowed_pages || []).length" class="hint">全部（未限制）</span>
               <span v-else><span v-for="p in u.allowed_pages" :key="p" class="badge" style="margin-right: 4px">{{ pageName(p) }}</span></span>
             </td>
-            <td><span v-if="u.has_personal_ai" class="badge">已配置</span><span v-else class="hint">-</span></td>
             <td class="hint">{{ u.created_at }}</td>
             <td>
               <button class="btn ghost sm" @click="dlg = { ...u, password: '' }">编辑</button>
@@ -28,7 +27,7 @@
           </tr>
         </tbody>
       </table>
-      <p class="hint" style="margin-top: 10px">「AI」勾选 = 允许该用户使用管理员配置的全局 Key；用户自己配了 Key 则无需勾选也能用（自己的 Key 优先）。</p>
+      <p class="hint" style="margin-top: 10px">「AI」勾选 = 允许该用户使用管理员配置的全局 Key（v1.6.0 起全站只有这一份 Key，个人配置已下线）。</p>
     </div>
 
     <div v-if="dlg" class="mask" @click.self="dlg = null">

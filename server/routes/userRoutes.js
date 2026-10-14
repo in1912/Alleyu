@@ -15,7 +15,7 @@ function rowOut(u) {
   return {
     id: u.id, username: u.username, role: u.role, display_name: u.display_name,
     allowed_pages: JSON.parse(u.allowed_pages || '[]'), allowed_tabs: JSON.parse(u.allowed_tabs || '{}'),
-    can_use_ai: !!u.can_use_ai, has_personal_ai: !!(u.ai_base_url && u.ai_model),
+    can_use_ai: !!u.can_use_ai,
     created_at: u.created_at,
   };
 }

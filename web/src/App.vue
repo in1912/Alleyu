@@ -1,5 +1,5 @@
 <template>
-  <div v-if="route.name === 'login' || route.name === 'home'" class="full">
+  <div v-if="route.name === 'login' || route.name === 'home' || route.name === 'share'" class="full">
     <router-view />
   </div>
   <div v-else class="shell">

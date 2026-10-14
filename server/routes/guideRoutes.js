@@ -1,9 +1,11 @@
-// 攻划：创建（解析城市坐标 + 天气上下文落 params）、列表、详情、删除、SSE 流式。
-// SSE 实现为「轮询读库」：生成进度由 guideService 节流写库，断线重连可续看，无需常驻订阅。
+// 攻划：创建（解析城市坐标 + 天气上下文落 params）、列表、详情、删除、SSE 流式、
+// 编辑正文与分享链接（v1.6.0）。SSE 实现为「轮询读库」：生成进度由 guideService 节流写库，
+// 断线重连可续看，无需常驻订阅。
 const express = require('express');
+const crypto = require('crypto');
 const { db } = require('../db');
 const { generateGuide } = require('../services/guideService');
-const { personalConfig, globalConfig } = require('../services/aiService');
+const { globalConfig } = require('../services/aiService');
 
 const r = express.Router();
 
@@ -42,8 +44,8 @@ r.post('/', async (req, res) => {
   const gate = req.user.role === 'admin' || req.user.can_use_ai;
   if (!gate) return res.status(403).json({ error: '管理员未给你开通 AI 使用权限' });
   const stubbed = process.env.ALLEYU_AI_STUB === '1' || process.env.ALLEYU_AI_FORCE_STUB === '1';
-  if (!stubbed && !personalConfig(req.user.id) && !globalConfig()) {
-    return res.status(400).json({ error: '尚无可用 AI 配置：可在「设置→AI 配置」填自己的接口，或等管理员配置全局 Key' });
+  if (!stubbed && !globalConfig()) {
+    return res.status(400).json({ error: '尚无可用 AI 配置：请管理员在「设置→全局配置」填写接口与 Key' });
   }
   const p = sanitizeParams(req.body || {});
   if (!p.destination) return res.status(400).json({ error: '目的地必填' });
@@ -93,8 +95,8 @@ r.post('/:id/regenerate', async (req, res) => {
   const gate = req.user.role === 'admin' || req.user.can_use_ai;
   if (!gate) return res.status(403).json({ error: '管理员未给你开通 AI 使用权限' });
   const stubbed = process.env.ALLEYU_AI_STUB === '1' || process.env.ALLEYU_AI_FORCE_STUB === '1';
-  if (!stubbed && !personalConfig(req.user.id) && !globalConfig()) {
-    return res.status(400).json({ error: '尚无可用 AI 配置：可在「设置→AI 配置」填自己的接口，或等管理员配置全局 Key' });
+  if (!stubbed && !globalConfig()) {
+    return res.status(400).json({ error: '尚无可用 AI 配置：请管理员在「设置→全局配置」填写接口与 Key' });
   }
   db.prepare("UPDATE guides SET status='pending', content='', images_json='[]', error='', stage='', model='', updated_at=datetime('now','localtime') WHERE id=?").run(g.id);
   generateGuide(g.id);
@@ -104,8 +106,63 @@ r.post('/:id/regenerate', async (req, res) => {
 r.delete('/:id', (req, res) => {
   const g = db.prepare('SELECT id FROM guides WHERE id=? AND user_id=?').get(Number(req.params.id), req.user.id);
   if (!g) return res.status(404).json({ error: '攻略不存在' });
+  db.prepare('DELETE FROM shares WHERE guide_id=?').run(g.id); // SQLite 默认不强制 FK，手动清
   db.prepare('DELETE FROM guides WHERE id=?').run(g.id);
   res.json({ ok: true });
+});
+
+// 编辑正文（v1.6.0）：已完成的攻略可直接改 markdown；动态分享链接自动跟着更新。
+r.put('/:id', (req, res) => {
+  const g = db.prepare('SELECT id, status FROM guides WHERE id=? AND user_id=?').get(Number(req.params.id), req.user.id);
+  if (!g) return res.status(404).json({ error: '攻略不存在' });
+  if (g.status !== 'done') return res.status(409).json({ error: '生成中/失败的攻略不能编辑（失败请用重新生成）' });
+  const content = String((req.body || {}).content || '');
+  if (!content.trim()) return res.status(400).json({ error: '正文不能为空' });
+  db.prepare("UPDATE guides SET content=?, updated_at=datetime('now','localtime') WHERE id=?").run(content, g.id);
+  res.json({ ok: true });
+});
+
+// ---- 分享链接（v1.6.0）：token 即能力凭证（32hex，可作废）----
+// mode: dynamic=打开时读攻略当前内容（跟随编辑/重新生成）；static=分享那一刻的全文快照，
+// 之后原文怎么改都不动，可手动「更新快照」。公开读端点在 shareRoutes（EXEMPT 免登录）。
+function shareOut(s) {
+  return { token: s.token, mode: s.mode, created_at: s.created_at, updated_at: s.updated_at, snapshot_len: s.snapshot ? s.snapshot.length : 0 };
+}
+
+r.get('/:id/shares', (req, res) => {
+  const g = db.prepare('SELECT id FROM guides WHERE id=? AND user_id=?').get(Number(req.params.id), req.user.id);
+  if (!g) return res.status(404).json({ error: '攻略不存在' });
+  const rows = db.prepare('SELECT * FROM shares WHERE guide_id=? ORDER BY id DESC').all(g.id);
+  res.json({ shares: rows.map(shareOut) });
+});
+
+r.post('/:id/shares', (req, res) => {
+  const g = db.prepare('SELECT id, title, content, status FROM guides WHERE id=? AND user_id=?').get(Number(req.params.id), req.user.id);
+  if (!g) return res.status(404).json({ error: '攻略不存在' });
+  if (g.status !== 'done') return res.status(409).json({ error: '攻略还没生成完成，不能分享' });
+  const mode = (req.body || {}).mode === 'static' ? 'static' : 'dynamic';
+  const token = crypto.randomBytes(16).toString('hex');
+  db.prepare('INSERT INTO shares(guide_id, token, mode, snapshot) VALUES(?,?,?,?)')
+    .run(g.id, token, mode, mode === 'static' ? g.content : '');
+  const s = db.prepare('SELECT * FROM shares WHERE token=?').get(token);
+  res.json({ ...shareOut(s), url: '/#/s/' + token });
+});
+
+// 静态分享刷新快照到当前正文（动态分享无需刷新）
+r.put('/:id/shares/:token', (req, res) => {
+  const g = db.prepare('SELECT id, content FROM guides WHERE id=? AND user_id=?').get(Number(req.params.id), req.user.id);
+  if (!g) return res.status(404).json({ error: '攻略不存在' });
+  const s = db.prepare('SELECT * FROM shares WHERE token=? AND guide_id=?').get(String(req.params.token || ''), g.id);
+  if (!s) return res.status(404).json({ error: '分享不存在' });
+  db.prepare("UPDATE shares SET snapshot=?, updated_at=datetime('now','localtime') WHERE id=?").run(g.content, s.id);
+  res.json({ ok: true, ...shareOut(db.prepare('SELECT * FROM shares WHERE id=?').get(s.id)) });
+});
+
+r.delete('/:id/shares/:token', (req, res) => {
+  const g = db.prepare('SELECT id FROM guides WHERE id=? AND user_id=?').get(Number(req.params.id), req.user.id);
+  if (!g) return res.status(404).json({ error: '攻略不存在' });
+  const info = db.prepare('DELETE FROM shares WHERE token=? AND guide_id=?').run(String(req.params.token || ''), g.id);
+  res.json({ ok: true, revoked: info.changes > 0 });
 });
 
 // SSE：创建后前端 EventSource 直连；状态 done/error 后发终态并关闭。

@@ -111,6 +111,17 @@ CREATE TABLE IF NOT EXISTS guides (
   updated_at TEXT DEFAULT (datetime('now','localtime'))
 );
 CREATE INDEX IF NOT EXISTS idx_guides_user ON guides(user_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS shares (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  guide_id INTEGER NOT NULL,
+  token TEXT NOT NULL UNIQUE,
+  mode TEXT NOT NULL DEFAULT 'dynamic',
+  snapshot TEXT NOT NULL DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  updated_at TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_shares_guide ON shares(guide_id);
 `;
 db.exec(DDL);
 
@@ -126,6 +137,7 @@ addCol('cities', 'line', "TEXT NOT NULL DEFAULT '国内'");
 addCol('guides', 'stage', "TEXT NOT NULL DEFAULT ''");
 // v1.5.0：完整提示词（buildMessages 的 JSON 快照，详情页生成来源下方折叠框展示+复制）
 addCol('guides', 'prompt', "TEXT NOT NULL DEFAULT ''");
+// v1.6.0 分享表在 DDL 里建（shares：token 能力链接，dynamic=跟随原文 / static=快照）
 
 // ---------- settings 读写 ----------
 function getSetting(key) {

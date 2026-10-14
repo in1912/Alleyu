@@ -1,18 +1,9 @@
 // AI 通道：OpenAI 兼容 /chat/completions（流式）。
-// Key 解析优先级（用户需求）：个人 Key（自己配置的）> 管理员总配置的 Key；两边都没配 → 明确报错。
+// v1.6.0 起只有管理员全局一份 Key（用户拍板「只保留管理员设置的 apikey」）——
+// 个人配置曾与全局分叉出「同 Key 不同命」的排查成本（丢 sk- 前缀肉眼不可见），砍掉。
 // 密钥 AES-GCM 落库；任何接口不回明文，只回 has_key 布尔。
-const { db, getSetting } = require('../db');
+const { getSetting } = require('../db');
 const { encrypt, decrypt } = require('../crypto');
-
-function personalConfig(userId) {
-  const u = db.prepare('SELECT ai_base_url, ai_model, ai_key FROM users WHERE id=?').get(userId);
-  if (!u) return null;
-  const key = decrypt(u.ai_key || '');
-  if (u.ai_base_url && u.ai_model && key) {
-    return { source: 'personal', baseUrl: u.ai_base_url, model: u.ai_model, key };
-  }
-  return null;
-}
 
 function globalConfig() {
   const baseUrl = getSetting('ai_base_url');
@@ -22,13 +13,13 @@ function globalConfig() {
   return null;
 }
 
-// 解析当前用户可用的 AI 配置：personal 优先；都不完整 → null。
+// 解析当前可用的 AI 配置：全局配置；没有 → null。
 // ALLEYU_AI_FORCE_STUB=1 是「测试确定性」开关：无视一切已配 Key 强制走桩。
 // 起因 v1.5.0：本机 data/ 存着用户真 Key，ALLEYU_AI_STUB=1 兜底语义拦不住它，
 // render 自检的「现场生成」一直在打真实 DeepSeek——首字 20s+、偶发空流，断言随机红。
-function resolveConfig(userId) {
+function resolveConfig() {
   if (process.env.ALLEYU_AI_FORCE_STUB === '1') return { source: 'stub', baseUrl: '', model: 'stub', key: '' };
-  return personalConfig(userId) || globalConfig() || null;
+  return globalConfig() || null;
 }
 
 // 接口地址归一：只填域名/IP:端口 → 自动补 /v1/chat/completions；带路径的智能拼接。
@@ -55,7 +46,13 @@ async function testConnection(cfg) {
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      throw new Error(`HTTP ${res.status}${text ? `：${text.slice(0, 120)}` : ''}（检查地址/Key/模型名是否匹配该服务商）`);
+      let hint = '';
+      // 实测坑（v1.6.0 用户报障）：Key 粘贴丢了 sk- 前缀只剩 32 位十六进制，
+      // 服务商报错又把 Key 掩码成 ****xxxx，肉眼看不出和好 Key 的差别——这里点名说出来。
+      if (res.status === 401 && cfg.key && /^[0-9a-f]{32}$/i.test(cfg.key.trim())) {
+        hint = '；当前 Key 是 32 位十六进制（无 sk- 前缀）——像是粘贴时丢了开头，请重新完整复制';
+      }
+      throw new Error(`HTTP ${res.status}${text ? `：${text.slice(0, 120)}` : ''}（检查地址/Key/模型名是否匹配该服务商）${hint}`);
     }
     const j = await res.json().catch(() => ({}));
     const models = Array.isArray(j.data) ? j.data.map((m) => m.id || '').filter(Boolean) : [];
@@ -75,10 +72,13 @@ async function* streamChat(cfg, messages, { maxTokens = 8000, temperature = 0.5 
     return;
   }
   const url = chatUrl(cfg.baseUrl);
+  // thinking:{type:'disabled'}：deepseek-flash 等推理模型会把 max_tokens 全部吃进思考链
+  // （实测 200/200 reasoning_tokens、finish=length、content 恒空——「空内容/北京 652 字」的根因），
+  // 攻略是纯写作任务不需要思考链，显式关掉。绝大多数 OpenAI 兼容网关忽略未知字段。
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.key}` },
-    body: JSON.stringify({ model: cfg.model, messages, max_tokens: maxTokens, temperature, stream: true }),
+    body: JSON.stringify({ model: cfg.model, messages, max_tokens: maxTokens, temperature, stream: true, thinking: { type: 'disabled' } }),
     signal: AbortSignal.timeout(600000),
   });
   if (!res.ok) {
@@ -182,4 +182,4 @@ async function* stubStream(messages) {
   }
 }
 
-module.exports = { resolveConfig, personalConfig, globalConfig, chatUrl, testConnection, streamChat, encrypt };
+module.exports = { resolveConfig, globalConfig, chatUrl, testConnection, streamChat, encrypt };

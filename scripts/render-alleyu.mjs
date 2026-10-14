@@ -179,6 +179,47 @@ if (done && done.status === 'done') {
   }
   await page.screenshot({ path: path.join(IMG_DIR, '攻略详情.png'), fullPage: false });
   detailShotDone = true;
+
+  // ---- v1.6.0：分享对话框 + 编辑 Markdown + 匿名分享页 ----
+  await page.goto(URL_BASE + '/#/guide/' + genRes.id);
+  await page.waitForSelector('.gv-head button', { timeout: 8000 });
+  await page.locator('.gv-head button').filter({ hasText: '分享' }).click();
+  await page.waitForSelector('.dlg', { timeout: 4000 });
+  const optTexts = await page.locator('.dlg .seg .opt').allInnerTexts();
+  ok(optTexts.length === 2 && optTexts.some((t) => t.includes('动态')) && optTexts.some((t) => t.includes('静态')), '分享对话框：动态更新/静态链接两种模式');
+  await page.locator('.dlg button').filter({ hasText: '生成分享链接' }).click();
+  await page.waitForSelector('.share-row', { timeout: 4000 });
+  const shareUrlText = (await page.locator('.share-row .share-url').first().innerText()).trim();
+  ok(/\/#\/s\/[0-9a-f]{32}/.test(shareUrlText), '生成 32hex 分享链接（行内可见完整 URL）');
+  await page.screenshot({ path: path.join(IMG_DIR, '分享.png'), fullPage: false });
+  await page.locator('.dlg button').filter({ hasText: '关闭' }).click();
+
+  // 编辑模式：改 Markdown 原文并保存
+  await page.locator('.gv-head button').filter({ hasText: '编辑' }).click();
+  await page.waitForSelector('.editarea', { timeout: 4000 });
+  const areaLen = await page.locator('.editarea').evaluate((el) => el.value.length);
+  ok(areaLen > 500, '编辑框载入当前 Markdown 原文');
+  const marker = '编辑标记段RenderE2E';
+  await page.locator('.editarea').evaluate((el, m) => { el.value += '\n\n## ' + m + '\n'; el.dispatchEvent(new Event('input', { bubbles: true })); }, marker);
+  await page.locator('.editwrap button').filter({ hasText: '保存修改' }).click();
+  await page.waitForTimeout(800);
+  const mdAfter = await page.locator('.md').innerText();
+  ok(mdAfter.includes(marker), '保存编辑后正文即时更新（含追加段）');
+
+  // 匿名新 context（无任何登录态）打开分享链接
+  const anon = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const apage = await anon.newPage();
+  await apage.goto(shareUrlText);
+  await apage.waitForSelector('.share-titlebox h1', { timeout: 8000 });
+  ok(apage.url().includes('/#/s/'), '免登录：未被路由守卫弹回登录页');
+  const badgeText = await apage.locator('.share-top .badge').innerText();
+  ok(badgeText.includes('动态更新'), '分享页模式徽标=动态更新');
+  const anonText = await apage.locator('.md').innerText();
+  ok(anonText.includes(marker), '动态分享页跟随编辑（匿名读到追加段）');
+  ok((await apage.locator('.share-top button').filter({ hasText: '导出 PDF' }).count()) === 1, '分享页有「导出 PDF」按钮');
+  ok((await apage.locator('.side').count()) === 0, '分享页无侧栏（整页排版）');
+  await apage.screenshot({ path: path.join(IMG_DIR, '分享页.png'), fullPage: false });
+  await anon.close();
 }
 
 // 其余页面截图（不深度断言，保底可见性）
@@ -197,6 +238,12 @@ for (const [hash, sel, name] of [
     ok(false, name + ' 页渲染（选择器超时）');
   }
 }
+
+// v1.6.0：设置页只有三页签（个人 AI 配置已下线，全站唯一全局 Key）
+await page.goto(URL_BASE + '/#/settings');
+await page.waitForSelector('.tabs .t', { timeout: 6000 });
+const setTabs = await page.locator('.tabs .t').allInnerTexts();
+ok(setTabs.length === 3 && !setTabs.some((t) => t.includes('我的 AI')), '设置页三页签（AI 全局/密码/系统，个人配置已下线）');
 
 // v1.3.0：国际线路筛选 pill（库页）
 await page.goto(URL_BASE + '/#/library');

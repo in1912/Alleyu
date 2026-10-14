@@ -11,8 +11,8 @@
 ```bash
 npm start                                     # 起 9610（start.bat 同效）；Node >= 22.5（node:sqlite）
 ALLEYU_AI_STUB=1 node server/index.js         # 桩 AI 模式（不调外网；配了真 Key 仍走真接口）
-node scripts/check-alleyu.mjs                 # 离线自检 83 项（独立临时 DATA_DIR，端口 9690）
-node scripts/check-alleyu.mjs --online        # +4 项真实高德/Open-Meteo 断言（共 87）
+node scripts/check-alleyu.mjs                 # 离线自检 111 项（独立临时 DATA_DIR，端口 9690）
+node scripts/check-alleyu.mjs --online        # +4 项真实高德/Open-Meteo 断言（共 115）
 NODE_PATH=D:\cc\personal-workbench\node_modules node scripts/render-alleyu.mjs   # Playwright 渲染自检（自起 FORCE_STUB 桩服务器，独占 9610）
 cd web && npm run build                       # 前端 → dist/<时间戳>/ + .latest
 ```
@@ -22,13 +22,13 @@ Windows 注意：npm 卡住加 `--registry=https://registry.npmmirror.com`；重
 ## 数据与密钥
 
 - 一切运行时数据在 `data/`（gitignore）：`alleyu.sqlite`、`.secret`（AES 密钥）、`mapimg/` 地图缓存。**amap key 与用户 AI key 都在库里，data/ 永不入 git。**
-- AI key 落库 AES-256-GCM（`enc:v1:iv:tag:data`），接口只回 has_key。优先级：个人(base_url+model+key 全配齐) → 全局(settings) → 无。
+- AI key 落库 AES-256-GCM（`enc:v1:iv:tag:data`），接口只回 has_key。**v1.6.0 起全站只有管理员全局一份 Key**（settings 表 ai_key/ai_base_url/ai_model）；个人配置端点已删（/ai/config、/ai/test → 404），resolveConfig() 无参。Key 保存走 cleanKey（剥全部空白，不只 trim）。
 - 默认管理员 admin/admin123 仅空库首启生效；生产改密码。
 
 ## 关键实现事实
 
-- **node:sqlite 坑**：SQL 字符串字面量必须单引号；占位符个数必须精确；加列用 addCol 幂等模式；PRAGMA journal_mode=DELETE + busy_timeout + 事务包裹在 db.js。
-- **EXEMPT 是相对路径**：`app.use('/api')` 内 req.path 不带 /api 前缀，EXEMPT=['auth/login','health','system-info','amap/mapimg','amap/photo']；system-info 另在顶层注册。
+- **node:sqlite 坑**：SQL 字符串字面量必须单引号；占位符个数必须精确；加列用 addCol 幂等模式；PRAGMA journal_mode=DELETE + busy_timeout + 事务包裹在 db.js。**SQLite 默认不强制 FK**：删攻略必须手动 `DELETE FROM shares WHERE guide_id=?`（guideRoutes DELETE 里做了）。
+- **EXEMPT 是相对路径**：`app.use('/api')` 内 req.path 不带 /api 前缀，EXEMPT=['auth/login','health','system-info','amap/mapimg','amap/photo','share']；system-info 另在顶层注册。share 前缀整段免登录（公开分享页 `GET /api/share/:token`），但响应只回 title/mode/content/updated_at——prompt/params/images 永不下发。
 - **SSE=查库**：生成写库节流 ~600ms，stream 端点 400ms 轮询推增量；前端 GuideView 依赖 `streamed` ref（不是 content）。
 - **SSE 内容协议=基线快照式（v1.4.0）**：tick 维护 `believed`（认为客户端已有的精确内容）——`c.startsWith(believed)` 走 `delta` 增量，否则（首拍/断线重连/enrich **顶部前插封面**改写内容）推 `reset` 全文快照。**旧纯 `slice(sent)` 协议的两个真 bug 就是它修的**：前插场景把中段文本当增量推、封面永远到不了前端；重连 `sent=0` 全文重复追加。前端 done 后以库内全文为准（长度比较不可靠）。
 - **生成阶段管线（v1.4.0）**：guides.stage 列（weather/connect/write/retryN/enrich:子步骤），guideService setStage 写库、SSE 推 `stage` 事件、GuideView 进度条消费；done/error 清空。**过短自动重试（v1.5.0 收紧）**：`minChars = max(1200, days×300)`，循环只在 `content.trim().length >= minChars` 时 break——起因用户实测北京 7 日游真模型正常收流但只吐 600 字（v1.4.0 只拦「空」，短废稿照存）。半途断流且已有内容仍按失败 throw；3 次不达标报「不完整…请点重新生成」。**桩文案必须 ≥minChars**（stubGuideText ~1370 字，check 靠它不靠降闸门）。
@@ -43,7 +43,9 @@ Windows 注意：npm 卡住加 `--registry=https://registry.npmmirror.com`；重
 - 侧栏图标（v1.1.1）：App.vue 的 ICONS 表=单色线性 SVG（stroke=currentColor 跟随文字色，激活变白），v-html 注入；favicon 与生成转圈=🐰；渲染自检的攻略详情截图只认「现场新生成」那篇（detailShotDone 标志，旧攻略是照片封面别拿去当 README 图）。
 - 国际线路（v1.3.0）：cities.line 列（addCol 默认'国内'；线路白名单 LINES 在 cityRoutes）；db.js SEED_INTL=五线 58 城直接入库（城市挑选对齐参考站 tabiji.ai 覆盖，门票=「约」参考值，坐标 WGS-84 仅天气用），迁移 seedIntlLines 用 settings 标记 seed_intl_v1 **只跑一次，之后管理员删改不复活**；`GET /api/cities/lines` 汇总计数、`/cities?line=` 过滤；库页 LibraryView 线路 pill + 线路列 + 弹窗线路下拉。
 - **国际线攻略护栏**：高德静态地图实测无海外底图（zoom4 也只渲染中国区域）→ enrichGuide 查城市 line，国际线直接 return（跳过 POI 解析/总览图/路线图/封面/照片），正文插一行「国际线路目的地…不插图」说明；天气（Open-Meteo 全球）+ AI 正文 + 生成来源页脚照常。attractions 新录时国际城不触发高德回填。
-- 攻略展示净化（GuideView.cleanMd）：剥旧桩横幅 + 正文只从第一个 markdown 标题开始（AI 废话前言不显示不复制）；存储原文不动。
+- 攻略展示净化（web/src/md.js 的 cleanMd，GuideView/ShareView 共用）：剥旧桩横幅 + `<!-- alleyu:stub -->` 注释 + 正文只从第一个 markdown 标题开始（AI 废话前言不显示不复制）；存储原文不动。
+- **v1.6.0 分享系统**：`shares` 表（guide_id/token 32hex/mode dynamic|static/snapshot）DDL 在 db.js；管理端点全在 guideRoutes（GET/POST `/:id/shares`、PUT/DELETE `/:id/shares/:token`，全部 user_id 隔离+done-only 409），公开读在 shareRoutes（EXEMPT）。动态=现读 guides.content（攻略非 done 时 404「稍后再试」），静态=读 snapshot（PUT 刷新）。前端 ShareView（#/s/:token，router 守卫豁免 name==='share'，App.vue 整页无侧栏）；GuideView 分享对话框（创建即复制链接）+ 编辑模式（改 clean 后原文存库）。**导出 PDF=window.print()**：零依赖，打印 CSS 在 style.css @media print（.no-print + 侧栏/按钮行/进度卡全隐，print-color-adjust:exact），打印前临时改 document.title 当文件名（print 同步阻塞，结束改回）。
+- **v1.6.0 两个真 bug 的根因（都实测验证过）**：①deepseek-flash 是推理模型——`max_tokens` 预算被 reasoning_content 吃光导致正文空/极短（探针：200 tokens 全进思考、content 0 字、finish=length）→ streamChat 请求体固定带 `thinking:{type:'disabled'}`（`reasoning_effort:'none'` 等效；`enable_thinking`/`chat_template_kwargs` 对 deepseek 无效）；②全局 Key 401=用户粘贴丢了 `sk-` 前缀（32hex vs 35 字符同尾巴，服务商报错只回 `****a9f1` 看不出）→ testConnection 401 且 Key 是裸 32hex 时提示「像是粘贴时丢了开头」+ 前端 Key 输入框非 sk- 开头实时黄字提醒。
 - 高德 Key 常见错误码人话提示在 settingsRoutes 的 AMAP_HINTS（10009=JS API 类型 Key 调不了 REST，真实踩坑）；`POST /settings/amap/test` 永远回 200+{ok,...}，`POST /settings/amap/reset` 恢复 db.js 的 DEFAULT_AMAP_KEY。
 - SPA 挂载坑（App.vue）：登录是 SPA 内跳转，App 只挂载一次 → 必须 watch route.fullPath 补拉 /auth/me，否则从首页进任何功能页侧栏空菜单。渲染自检要用 SPA 流程（登录后不整页 goto），page.goto 会重挂 App 把这类 bug 藏住。
 - 首页骑手是乳白兔子（RiderScene.vue，v1.0 的 PigScene.vue 已删）：浅色角色在浅色背景上，手臂用双层描边（#b3a68c 底衬 + #f6f1e5 乳白面层）保对比度。
@@ -52,7 +54,7 @@ Windows 注意：npm 卡住加 `--registry=https://registry.npmmirror.com`；重
 
 ## 发版收尾清单
 
-1. 两个自检全绿（check 83/83 或 --online 87/87；render 39/39——render 前先停 9610 上的一切服务，它要独占端口自起桩服务器）
+1. 两个自检全绿（check 111/111 或 --online 115/115；render 49/49——render 前先停 9610 上的一切服务，它要独占端口自起桩服务器）
 2. 改了前端 → rebuild，确认 dist/.latest 指向新目录
 3. README 截图用 render-alleyu.mjs 重新生成（img/ 文件名=页面名）
 4. 提交推送双远程：github `git@github.com:in1912/Alleyu.git` + gitea `https://gitea.in1912.cc/in1912/Alleyu.git`，push 后 ls-remote 核对

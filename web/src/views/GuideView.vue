@@ -2,8 +2,11 @@
   <div class="gv">
     <div class="gv-head">
       <h2 style="margin: 0">📘 {{ guide?.title || '攻略生成中…' }}</h2>
-      <div style="display: flex; gap: 8px">
-        <button v-if="streamed" class="btn ghost sm" @click="copy">复制全文</button>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap">
+        <button v-if="streamed && !editing" class="btn ghost sm" @click="copy">复制全文</button>
+        <button v-if="status === 'done' && !editing" class="btn ghost sm" @click="doPrint">导出PDF</button>
+        <button v-if="status === 'done' && !editing" class="btn ghost sm" @click="openShare">分享</button>
+        <button v-if="status === 'done' && !editing" class="btn ghost sm" @click="startEdit">编辑</button>
         <button v-if="status === 'error' || status === 'done'" class="btn ghost sm" @click="regen">重新生成</button>
         <a href="#/history" class="btn ghost sm">返回列表</a>
         <button class="btn danger sm" @click="del">删除</button>
@@ -24,7 +27,47 @@
       <p class="err-text" style="font-size: 14px">❌ {{ guide?.error }}</p>
     </div>
 
-    <div v-if="streamed" class="card md" v-html="html"></div>
+    <!-- 编辑模式（v1.6.0）：直接改这份攻略的 Markdown 原文 -->
+    <div v-if="editing" class="card editwrap">
+      <div class="pb-bar">
+        <span class="hint">编辑 Markdown 原文（保存即更新正文；动态分享链接自动跟随，静态快照需在分享里手动刷新）</span>
+        <div style="display: flex; gap: 8px">
+          <button class="btn ghost sm" @click="editing = false">取消</button>
+          <button class="btn sm" @click="saveEdit">保存修改</button>
+        </div>
+      </div>
+      <textarea v-model="editText" class="editarea" spellcheck="false"></textarea>
+    </div>
+    <div v-if="streamed && !editing" class="card md" v-html="html"></div>
+
+    <!-- 分享对话框（v1.6.0）：动态=跟随原文 / 静态=快照，链接免登录可看 -->
+    <div v-if="shareDlg" class="mask" @click.self="shareDlg = false">
+      <div class="dlg">
+        <h3>🔗 分享这份攻略</h3>
+        <p class="hint" style="margin: 0 0 10px">链接免登录可打开；任何人拿到链接都能看，撤销即失效。</p>
+        <div class="seg" style="display: flex; flex-direction: column; align-items: stretch; gap: 8px">
+          <span class="opt" :class="{ on: newMode === 'dynamic' }" @click="newMode = 'dynamic'">🔄 动态更新 —— 你改了攻略（或重新生成），链接内容自动跟随</span>
+          <span class="opt" :class="{ on: newMode === 'static' }" @click="newMode = 'static'">🧊 静态链接 —— 冻结当前内容，之后点「刷新快照」才更新</span>
+        </div>
+        <div style="margin-top: 12px; display: flex; gap: 10px; align-items: center">
+          <button class="btn" @click="createShare">生成分享链接</button>
+          <span v-if="shareMsg" class="hint">{{ shareMsg }}</span>
+        </div>
+        <div v-if="shares.length" style="margin-top: 16px">
+          <div class="hint" style="margin-bottom: 6px">已有链接（{{ shares.length }}）：</div>
+          <div v-for="s in shares" :key="s.token" class="share-row">
+            <span class="badge" :class="s.mode === 'dynamic' ? 'blue' : 'gray'">{{ s.mode === 'dynamic' ? '动态' : '静态' }}</span>
+            <code class="share-url">{{ shareUrl(s) }}</code>
+            <span class="hint">更新于 {{ s.updated_at }}</span>
+            <span style="flex: 1"></span>
+            <button class="btn ghost sm" @click="copyUrl(s)">复制</button>
+            <button v-if="s.mode === 'static'" class="btn ghost sm" @click="refreshSnap(s)">刷新快照</button>
+            <button class="btn danger sm" @click="revoke(s)">撤销</button>
+          </div>
+        </div>
+        <div style="margin-top: 18px; text-align: right"><button class="btn ghost" @click="shareDlg = false">关闭</button></div>
+      </div>
+    </div>
 
     <!-- 完整提示词（v1.5.0）：默认折叠，展开可看全文/复制——交代这次生成到底发了什么给模型 -->
     <details v-if="guide && guide.prompt" class="card promptbox">
@@ -43,6 +86,7 @@ import { computed, onBeforeUnmount, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { marked } from 'marked';
 import { api, token, withToken } from '../api/index.js';
+import { cleanMd } from '../md.js';
 
 const route = useRoute();
 const id = route.params.id;
@@ -95,20 +139,6 @@ const peekText = computed(() => (streamed.value ? streamed.value.slice(-220) : '
 
 marked.setOptions({ breaks: true, gfm: true });
 
-// 展示前清洗：①去掉桩模式横幅（老数据存过整行提示）②去掉九模块框架正文之外的
-// AI 客套/杂项（第一个 markdown 标题之前的内容不显示，正文从框架标题起）
-function cleanMd(raw) {
-  let t = String(raw || '');
-  t = t.replace(/^>?\s*⚠?️?\s*这是\s*ALLEYU_AI_STUB=1\s*的本地桩输出[^\n]*\n?/gm, '');
-  t = t.replace(/<!--\s*alleyu:stub[^\n]*?-->\n?/g, ''); // 内部桩标记不进 DOM/复制（披露交给生成来源页脚）
-  const lines = t.split('\n');
-  const isHeading = (s) => /^#{1,6}\s/.test(s);
-  if (lines.length && !isHeading(lines[0])) {
-    const hi = lines.findIndex(isHeading);
-    if (hi > 0) t = lines.slice(hi).join('\n');
-  }
-  return t;
-}
 const clean = computed(() => cleanMd(streamed.value));
 const html = computed(() => marked.parse(clean.value));
 
@@ -181,13 +211,80 @@ async function regen() {
   }
 }
 async function del() {
-  if (!confirm('确定删除这份攻略？')) return;
+  if (!confirm('确定删除这份攻略？（已生成的分享链接会一并失效）')) return;
   try {
     await api('/guides/' + id, { method: 'DELETE' });
     location.hash = '#/history';
   } catch (e) {
     alert(e.message);
   }
+}
+
+// ---- 导出 PDF（v1.6.0）：走浏览器打印（零依赖），打印 CSS 隐藏界面只留正文 ----
+// 先改 document.title 让默认文件名是攻略标题；print() 同步阻塞，结束后改回
+function doPrint() {
+  const t = document.title;
+  document.title = (guide.value?.title || '攻略') + ' - 游巷';
+  window.print();
+  document.title = t;
+}
+
+// ---- 编辑 Markdown 原文（v1.6.0）----
+const editing = ref(false);
+const editText = ref('');
+function startEdit() {
+  editText.value = clean.value; // 编辑的是清洗后的展示原文（保存后存库，桩横幅等杂物就此消失）
+  editing.value = true;
+}
+async function saveEdit() {
+  if (!editText.value.trim()) { alert('内容不能为空'); return; }
+  try {
+    await api('/guides/' + id, { method: 'PUT', body: { content: editText.value } });
+    streamed.value = editText.value;
+    guide.value = { ...guide.value, updated_at: new Date().toLocaleString('zh-CN') };
+    editing.value = false;
+    alert('已保存');
+  } catch (e) { alert(e.message); }
+}
+
+// ---- 分享（v1.6.0）：dynamic=跟随原文 / static=快照 ----
+const shareDlg = ref(false);
+const shares = ref([]);
+const newMode = ref('dynamic');
+const shareMsg = ref('');
+function shareUrl(s) { return location.origin + location.pathname + '#/s/' + s.token; }
+async function openShare() {
+  shareDlg.value = true;
+  shareMsg.value = '';
+  try {
+    shares.value = (await api('/guides/' + id + '/shares')).shares;
+  } catch (e) { alert(e.message); }
+}
+async function createShare() {
+  shareMsg.value = '';
+  try {
+    const s = await api('/guides/' + id + '/shares', { method: 'POST', body: { mode: newMode.value } });
+    shares.value.unshift(s);
+    copyUrl(s);
+    shareMsg.value = '已生成并复制链接';
+  } catch (e) { alert(e.message); }
+}
+function copyUrl(s) {
+  navigator.clipboard.writeText(shareUrl(s)).then(() => { shareMsg.value = '已复制链接'; });
+}
+async function refreshSnap(s) {
+  try {
+    const j = await api('/guides/' + id + '/shares/' + s.token, { method: 'PUT' });
+    s.updated_at = j.updated_at;
+    shareMsg.value = '快照已刷新为当前内容';
+  } catch (e) { alert(e.message); }
+}
+async function revoke(s) {
+  if (!confirm('撤销后所有拿到该链接的人都将无法访问，确定？')) return;
+  try {
+    await api('/guides/' + id + '/shares/' + s.token, { method: 'DELETE' });
+    shares.value = shares.value.filter((x) => x.token !== s.token);
+  } catch (e) { alert(e.message); }
 }
 onBeforeUnmount(() => { if (es) es.close(); });
 
@@ -233,4 +330,15 @@ loadGuide().then(() => {
   font-size: 12px; line-height: 1.6;
 }
 .pb-bar { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+/* 编辑模式（v1.6.0）：等宽字体改 Markdown 原文 */
+.editarea {
+  width: 100%; min-height: 440px; margin-top: 10px; padding: 12px;
+  border: 1px solid var(--line); border-radius: 10px; background: #fff;
+  font: 13px/1.7 ui-monospace, Consolas, 'Courier New', monospace; color: var(--ink);
+  outline: none; resize: vertical;
+}
+.editarea:focus { border-color: var(--acc); box-shadow: 0 0 0 3px rgba(92, 138, 106, 0.15); }
+/* 分享对话框里的链接行（v1.6.0） */
+.share-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px dashed var(--line); flex-wrap: wrap; }
+.share-url { font-size: 12px; background: var(--card2); padding: 2px 8px; border-radius: 6px; word-break: break-all; }
 </style>

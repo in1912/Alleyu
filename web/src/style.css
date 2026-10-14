@@ -198,3 +198,20 @@ table.tb th { color: var(--mut); font-weight: 500; font-size: 12.5px; }
   .side .logo small, .side .nav-item span.txt, .side .me { display: none; }
   .nav-item { justify-content: center; }
 }
+
+/* ---- 打印 / 导出 PDF（v1.6.0）：攻略页与分享页共用，只留正文 ----
+   界面元素要么带 .no-print（ShareView 自己标的），要么是这里的已知选择器（侧栏/按钮行/进度卡/提示词框/编辑器/弹层）。
+   print-color-adjust:exact 让 h2 绿条/引用底色这类浅背景真的印出来。 */
+@media print {
+  .no-print, .side, .gv-head, .status-card, .promptbox, .editwrap, .mask { display: none !important; }
+  body { background: #fff !important; color: #000 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .shell { display: block !important; }
+  .main, .gv, .share-page { padding: 0 !important; margin: 0 !important; max-width: none !important; }
+  .card { border: none !important; box-shadow: none !important; background: #fff !important; padding: 0 !important; }
+  .md { font-size: 12pt; line-height: 1.7; }
+  .md h1, .md h2, .md h3, .md strong, a { color: #000 !important; }
+  .md img { box-shadow: none !important; break-inside: avoid; }
+  .md h1, .md h2, .md h3 { break-after: avoid; }
+  .md table { display: table; overflow: visible; }
+  .md table th { background: #eee !important; }
+}

@@ -9,7 +9,6 @@ function publicUser(u) {
   return {
     id: u.id, username: u.username, role: u.role, display_name: u.display_name,
     allowed_pages: u.allowed_pages, allowed_tabs: u.allowed_tabs, can_use_ai: u.can_use_ai,
-    has_personal_ai: !!(u.ai_base_url && u.ai_model),
   };
 }
 

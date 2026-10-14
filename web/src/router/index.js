@@ -11,13 +11,14 @@ const routes = [
   { path: '/weather', name: 'weather', component: () => import('../views/WeatherView.vue') },
   { path: '/settings', name: 'settings', component: () => import('../views/SettingsView.vue') },
   { path: '/users', name: 'users', component: () => import('../views/UsersView.vue') },
+  { path: '/s/:token', name: 'share', component: () => import('../views/ShareView.vue') }, // 公开分享页（免登录）
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ];
 
 const router = createRouter({ history: createWebHashHistory(), routes });
 
 router.beforeEach((to) => {
-  if (to.name !== 'login' && !token()) return { name: 'login' };
+  if (to.name !== 'login' && to.name !== 'share' && !token()) return { name: 'login' };
   return true;
 });
 

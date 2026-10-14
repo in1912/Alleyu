@@ -11,8 +11,8 @@ const app = express();
 app.disable('x-powered-by');
 app.use(express.json({ limit: '2mb' }));
 
-// 免登录通道（前缀匹配，相对 /api 挂载点的路径）：登录、健康检查、系统信息、图片直链（<img>/EventSource 带不了头）
-const EXEMPT = ['auth/login', 'health', 'system-info', 'amap/mapimg', 'amap/photo'];
+// 免登录通道（前缀匹配，相对 /api 挂载点的路径）：登录、健康检查、系统信息、图片直链（<img>/EventSource 带不了头）、分享公开读
+const EXEMPT = ['auth/login', 'health', 'system-info', 'amap/mapimg', 'amap/photo', 'share'];
 
 // /api/system-info 挂在根上（免登录的版本探针）
 app.get('/api/system-info', require('./routes/settingsRoutes').systemInfo);
@@ -37,6 +37,7 @@ app.use('/api/users', require('./routes/userRoutes'));
 app.use('/api/ai', require('./routes/aiRoutes'));
 app.use('/api', require('./routes/cityRoutes'));      // /api/cities /api/attractions /api/poi /api/import-poi
 app.use('/api/guides', require('./routes/guideRoutes'));
+app.use('/api/share', require('./routes/shareRoutes')); // 公开分享读（EXEMPT：token 即凭证）
 app.use('/api/amap', require('./routes/amapRoutes'));
 app.use('/api/weather', require('./routes/weatherRoutes'));
 app.use('/api/settings', require('./routes/settingsRoutes'));

@@ -8,24 +8,39 @@ const amap = require('../services/amapService');
 
 const r = express.Router();
 
+// 线路白名单（v1.3.0 国际线路；写入校验用，查询不做硬限制）
+const LINES = ['国内', '欧洲线', '中亚线', '东亚线', '北美线', '南美线'];
+
 // ---- 城市 ----
+// 线路汇总（库页的线路筛选 pill 计数）
+r.get('/cities/lines', (req, res) => {
+  const rows = db.prepare('SELECT line, COUNT(*) c FROM cities GROUP BY line ORDER BY CASE line WHEN \'国内\' THEN 0 ELSE 1 END, line').all();
+  res.json({ lines: rows });
+});
+
 r.get('/cities', (req, res) => {
   const q = String(req.query.q || '').trim();
-  const list = q
-    ? db.prepare('SELECT * FROM cities WHERE name LIKE ? OR province LIKE ? ORDER BY hot DESC, id LIMIT 30').all(`%${q}%`, `%${q}%`)
-    : db.prepare('SELECT * FROM cities ORDER BY hot DESC, id LIMIT 200').all();
+  const line = String(req.query.line || '').trim();
+  const cond = [];
+  const args = [];
+  if (q) { cond.push('(name LIKE ? OR province LIKE ?)'); args.push(`%${q}%`, `%${q}%`); }
+  if (line) { cond.push('line=?'); args.push(line); }
+  const where = cond.length ? 'WHERE ' + cond.join(' AND ') : '';
+  const limit = q || line ? 300 : 200;
+  const list = db.prepare(`SELECT * FROM cities ${where} ORDER BY hot DESC, id LIMIT ${limit}`).all(...args);
   res.json({ cities: list });
 });
 
 r.post('/cities', (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: '城市新增仅管理员' });
-  const { name, province, adcode, lng, lat, hot } = req.body || {};
+  const { name, province, adcode, lng, lat, hot, line } = req.body || {};
   if (!name) return res.status(400).json({ error: '城市名必填' });
+  if (line && !LINES.includes(line)) return res.status(400).json({ error: '未知线路：' + line });
   if (db.prepare('SELECT id FROM cities WHERE name=?').get(String(name).trim())) return res.status(400).json({ error: '城市已存在' });
   let coord = { lng: null, lat: null };
   if (lng != null && lat != null) coord = { lng: Number(lng), lat: Number(lat) };
-  const info = db.prepare('INSERT INTO cities(name,province,adcode,lng,lat,hot) VALUES(?,?,?,?,?,?)')
-    .run(String(name).trim(), String(province || ''), String(adcode || ''), coord.lng, coord.lat, hot ? 1 : 0);
+  const info = db.prepare('INSERT INTO cities(name,province,adcode,lng,lat,hot,line) VALUES(?,?,?,?,?,?,?)')
+    .run(String(name).trim(), String(province || ''), String(adcode || ''), coord.lng, coord.lat, hot ? 1 : 0, LINES.includes(line) ? line : '国内');
   res.json({ city: db.prepare('SELECT * FROM cities WHERE id=?').get(info.lastInsertRowid) });
 });
 
@@ -34,12 +49,14 @@ r.put('/cities/:id', (req, res) => {
   const c = db.prepare('SELECT * FROM cities WHERE id=?').get(Number(req.params.id));
   if (!c) return res.status(404).json({ error: '城市不存在' });
   const b = req.body || {};
-  db.prepare('UPDATE cities SET name=?, province=?, adcode=?, lng=?, lat=?, hot=? WHERE id=?')
+  if (b.line !== undefined && b.line !== '' && !LINES.includes(String(b.line))) return res.status(400).json({ error: '未知线路：' + b.line });
+  db.prepare('UPDATE cities SET name=?, province=?, adcode=?, lng=?, lat=?, hot=?, line=? WHERE id=?')
     .run(b.name !== undefined ? String(b.name).trim() : c.name, b.province !== undefined ? String(b.province) : c.province,
       b.adcode !== undefined ? String(b.adcode) : c.adcode,
       b.lng !== undefined ? (b.lng === null || b.lng === '' ? null : Number(b.lng)) : c.lng,
       b.lat !== undefined ? (b.lat === null || b.lat === '' ? null : Number(b.lat)) : c.lat,
-      b.hot !== undefined ? (b.hot ? 1 : 0) : c.hot, c.id);
+      b.hot !== undefined ? (b.hot ? 1 : 0) : c.hot,
+      b.line !== undefined && b.line !== '' ? String(b.line) : c.line, c.id);
   res.json({ city: db.prepare('SELECT * FROM cities WHERE id=?').get(c.id) });
 });
 
@@ -66,8 +83,9 @@ r.post('/attractions', (req, res) => {
   const info = db.prepare('INSERT INTO attractions(city_id,name,type,level,ticket,hours,must,note) VALUES(?,?,?,?,?,?,?,?)')
     .run(Number(city_id), String(name).trim(), String(type || '景点'), String(level || ''), String(ticket || ''), String(hours || ''), must ? 1 : 0, String(note || ''));
   const row = db.prepare('SELECT * FROM attractions WHERE id=?').get(info.lastInsertRowid);
-  // 新录入的景点顺手解析坐标（失败不影响录入）
-  amap.backfillAttraction(row.id).catch(() => {});
+  // 新录入的景点顺手解析坐标（失败不影响录入）；国际线路城市没有高德数据，跳过
+  const cityRow = db.prepare('SELECT line FROM cities WHERE id=?').get(Number(city_id));
+  if (!cityRow || cityRow.line === '国内') amap.backfillAttraction(row.id).catch(() => {});
   res.json({ attraction: row });
 });
 

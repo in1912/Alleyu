@@ -11,7 +11,7 @@
 ```bash
 npm start                                     # 起 9610（start.bat 同效）；Node >= 22.5（node:sqlite）
 ALLEYU_AI_STUB=1 node server/index.js         # 桩 AI 模式（不调外网）
-node scripts/check-alleyu.mjs                 # 离线自检 43 项（独立临时 DATA_DIR，端口 9690）
+node scripts/check-alleyu.mjs                 # 离线自检 51 项（独立临时 DATA_DIR，端口 9690）
 node scripts/check-alleyu.mjs --online        # +4 项真实高德/Open-Meteo 断言
 NODE_PATH=D:\cc\personal-workbench\node_modules node scripts/render-alleyu.mjs   # Playwright 渲染自检（先起 9610）
 cd web && npm run build                       # 前端 → dist/<时间戳>/ + .latest
@@ -38,6 +38,8 @@ Windows 注意：npm 卡住加 `--registry=https://registry.npmmirror.com`；重
 - 封面与连线（v1.2.0）：**封面=单色全程路线地图，不再随机搜照片**——buildStaticMapUrl 传 `ink:true`（标记 0x111111/线 0x1a1a1a），前端 `img[alt="封面地图"]{filter:grayscale(1)}` 显示层压灰，零图像处理依赖；总览图与封面都带全程连接线，`journeyLine()`=drivingPolyline 失败回落直连折线（**保证一定有线**）；点位顺序=正文首次出现顺序（findPoiMentions 按 indexOf 排序=行程顺序）。
 - 生成来源页脚（v1.2.0）：run() 里 `enrichResult.content + sourceFooter(cfg)` 无条件追加——AI 模型/接口出处 + 高德/Open-Meteo 链接 + 时间戳，增强失败也交代。
 - 侧栏图标（v1.1.1）：App.vue 的 ICONS 表=单色线性 SVG（stroke=currentColor 跟随文字色，激活变白），v-html 注入；favicon 与生成转圈=🐰；渲染自检的攻略详情截图只认「现场新生成」那篇（detailShotDone 标志，旧攻略是照片封面别拿去当 README 图）。
+- 国际线路（v1.3.0）：cities.line 列（addCol 默认'国内'；线路白名单 LINES 在 cityRoutes）；db.js SEED_INTL=五线 58 城直接入库（城市挑选对齐参考站 tabiji.ai 覆盖，门票=「约」参考值，坐标 WGS-84 仅天气用），迁移 seedIntlLines 用 settings 标记 seed_intl_v1 **只跑一次，之后管理员删改不复活**；`GET /api/cities/lines` 汇总计数、`/cities?line=` 过滤；库页 LibraryView 线路 pill + 线路列 + 弹窗线路下拉。
+- **国际线攻略护栏**：高德静态地图实测无海外底图（zoom4 也只渲染中国区域）→ enrichGuide 查城市 line，国际线直接 return（跳过 POI 解析/总览图/路线图/封面/照片），正文插一行「国际线路目的地…不插图」说明；天气（Open-Meteo 全球）+ AI 正文 + 生成来源页脚照常。attractions 新录时国际城不触发高德回填。
 - 攻略展示净化（GuideView.cleanMd）：剥旧桩横幅 + 正文只从第一个 markdown 标题开始（AI 废话前言不显示不复制）；存储原文不动。
 - 高德 Key 常见错误码人话提示在 settingsRoutes 的 AMAP_HINTS（10009=JS API 类型 Key 调不了 REST，真实踩坑）；`POST /settings/amap/test` 永远回 200+{ok,...}，`POST /settings/amap/reset` 恢复 db.js 的 DEFAULT_AMAP_KEY。
 - SPA 挂载坑（App.vue）：登录是 SPA 内跳转，App 只挂载一次 → 必须 watch route.fullPath 补拉 /auth/me，否则从首页进任何功能页侧栏空菜单。渲染自检要用 SPA 流程（登录后不整页 goto），page.goto 会重挂 App 把这类 bug 藏住。
@@ -47,7 +49,7 @@ Windows 注意：npm 卡住加 `--registry=https://registry.npmmirror.com`；重
 
 ## 发版收尾清单
 
-1. 两个自检全绿（check 43/43 或 --online 47/47；render 29/29）
+1. 两个自检全绿（check 51/51 或 --online 55/55；render 31/31）
 2. 改了前端 → rebuild，确认 dist/.latest 指向新目录
 3. README 截图用 render-alleyu.mjs 重新生成（img/ 文件名=页面名）
 4. 提交推送双远程：github `git@github.com:in1912/Alleyu.git` + gitea `https://gitea.in1912.cc/in1912/Alleyu.git`，push 后 ls-remote 核对

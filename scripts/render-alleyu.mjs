@@ -131,6 +131,17 @@ for (const [hash, sel, name] of [
   }
 }
 
+// v1.3.0：国际线路筛选 pill（库页）
+await page.goto(URL_BASE + '/#/library');
+await page.waitForSelector('.liblines .opt', { timeout: 8000 });
+const pillCount = await page.locator('.liblines .opt').count();
+ok(pillCount === 6, '库页线路筛选 pill=6（国内+五国际线）');
+await page.locator('.liblines .opt').filter({ hasText: '欧洲线' }).click();
+await page.waitForTimeout(900);
+const parisCell = await page.locator('.tb td').filter({ hasText: '巴黎' }).count();
+ok(parisCell >= 1, '欧洲线筛选出巴黎');
+await page.screenshot({ path: path.join(IMG_DIR, '城市景点库.png'), fullPage: false });
+
 // 攻略页（桩数据若在）
 await page.goto(URL_BASE + '/#/history');
 await page.waitForTimeout(800);

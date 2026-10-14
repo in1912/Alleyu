@@ -8,18 +8,21 @@
 
     <!-- 城市 -->
     <div v-if="tab === 'cities'" class="card">
+      <div class="seg liblines" style="margin-bottom: 14px">
+        <div v-for="ln in LINES" :key="ln" class="opt" :class="{ on: line === ln }" @click="setLine(ln)">{{ ln }}（{{ lineCount[ln] || 0 }}）</div>
+      </div>
       <div style="display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap">
-        <input v-model="cityQ" class="input" style="max-width: 260px" placeholder="搜索城市/省份" @input="loadCities" />
-        <button v-if="isAdmin" class="btn sm" @click="cityDlg = { ...emptyCity }">＋ 新增城市</button>
+        <input v-model="cityQ" class="input" style="max-width: 260px" placeholder="搜索城市/国家" @input="loadCities" />
+        <button v-if="isAdmin" class="btn sm" @click="cityDlg = { ...emptyCity, line }">＋ 新增城市</button>
       </div>
       <table class="tb">
-        <thead><tr><th>城市</th><th>省份</th><th>adcode</th><th>坐标</th><th>热门</th><th v-if="isAdmin">操作</th></tr></thead>
+        <thead><tr><th>城市</th><th>省份/国家</th><th>线路</th><th>坐标</th><th>热门</th><th v-if="isAdmin">操作</th></tr></thead>
         <tbody>
           <tr v-for="c in cities" :key="c.id" :class="{ sel: c.id === curCity }">
             <td><a @click="pickCity(c)" style="cursor: pointer; font-weight: 600">{{ c.name }}</a></td>
-            <td>{{ c.province }}</td>
-            <td>{{ c.adcode }}</td>
-            <td class="hint">{{ c.lng != null ? c.lng.toFixed(3) + ',' + c.lat.toFixed(3) : '未定位（首次使用自动解析）' }}</td>
+            <td>{{ c.province }}<span class="hint"> {{ c.adcode }}</span></td>
+            <td><span class="badge" :class="{ gray: (c.line || '国内') !== '国内' }">{{ c.line || '国内' }}</span></td>
+            <td class="hint">{{ c.lng != null ? c.lng.toFixed(3) + ',' + c.lat.toFixed(3) : (c.line && c.line !== '国内' ? '已按市中心定位' : '未定位（首次使用自动解析）') }}</td>
             <td><span v-if="c.hot" class="badge">热门</span><span v-else class="badge gray">-</span></td>
             <td v-if="isAdmin">
               <button class="btn ghost sm" @click="cityDlg = { ...c }">改</button>
@@ -79,10 +82,12 @@
         <h3>{{ cityDlg.id ? '编辑城市' : '新增城市' }}</h3>
         <div class="grid2">
           <div><label class="fld">城市名 *</label><input v-model="cityDlg.name" class="input" /></div>
-          <div><label class="fld">省份</label><input v-model="cityDlg.province" class="input" /></div>
-          <div><label class="fld">adcode</label><input v-model="cityDlg.adcode" class="input" /></div>
+          <div><label class="fld">省份/国家</label><input v-model="cityDlg.province" class="input" /></div>
+          <div><label class="fld">线路</label>
+            <select v-model="cityDlg.line" class="input"><option v-for="ln in LINES" :key="ln">{{ ln }}</option></select>
+          </div>
           <div><label class="fld">热门</label><select v-model="cityDlg.hot" class="input"><option :value="1">是</option><option :value="0">否</option></select></div>
-          <div><label class="fld">经度（可空，自动解析）</label><input v-model="cityDlg.lng" class="input" /></div>
+          <div><label class="fld">经度（可空，国内自动解析）</label><input v-model="cityDlg.lng" class="input" /></div>
           <div><label class="fld">纬度</label><input v-model="cityDlg.lat" class="input" /></div>
         </div>
         <p v-if="dlgErr" class="err-text">{{ dlgErr }}</p>
@@ -123,9 +128,12 @@ import { computed, onMounted, ref } from 'vue';
 import { api } from '../api/index.js';
 
 const TYPES = ['人文', '自然风光', '美食', '逛街', '休闲', '拍照打卡', '亲子', '景点'];
+const LINES = ['国内', '欧洲线', '中亚线', '东亚线', '北美线', '南美线'];
 const tab = ref('cities');
 const cities = ref([]);
 const cityQ = ref('');
+const line = ref('国内');
+const lineCount = ref({});
 const curCity = ref(null);
 const attractions = ref([]);
 const cityDlg = ref(null);
@@ -135,13 +143,24 @@ const poiOpen = ref(false);
 const poiQ = ref('');
 const poiHits = ref([]);
 const me = ref(null);
-const emptyCity = { name: '', province: '', adcode: '', hot: 0, lng: '', lat: '' };
+const emptyCity = { name: '', province: '', adcode: '', hot: 0, lng: '', lat: '', line: '国内' };
 const emptyAttr = { name: '', type: '人文', level: '', ticket: '', hours: '', must: 0, note: '' };
 const isAdmin = computed(() => me.value?.role === 'admin');
 
 async function loadCities() {
-  const j = await api('/cities?q=' + encodeURIComponent(cityQ.value.trim()));
+  const j = await api('/cities?q=' + encodeURIComponent(cityQ.value.trim()) + '&line=' + encodeURIComponent(line.value));
   cities.value = j.cities;
+}
+async function loadLines() {
+  try {
+    const j = await api('/cities/lines');
+    lineCount.value = Object.fromEntries((j.lines || []).map((x) => [x.line, x.c]));
+  } catch { /* 计数缺省 0 */ }
+}
+function setLine(ln) {
+  if (line.value === ln) return;
+  line.value = ln;
+  loadCities();
 }
 async function loadAttrs() {
   if (!curCity.value) { attractions.value = []; return; }
@@ -204,7 +223,7 @@ async function importPoi(p) {
 }
 onMounted(async () => {
   try { me.value = (await api('/auth/me')).user; } catch { /* 忽略 */ }
-  await loadCities();
+  await Promise.all([loadCities(), loadLines()]);
 });
 </script>
 

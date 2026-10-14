@@ -11,7 +11,7 @@
           <input v-model="form.destination" class="input" placeholder="例如：杭州" @input="searchCity('destination')" @focus="sugFor = 'destination'" @blur="sugFor = ''" />
           <div v-if="sugFor === 'destination' && citySugs.length" class="sug">
             <div v-for="c in citySugs" :key="c.id" class="s" @mousedown.prevent="form.destination = c.name; form.cityId = c.id; citySugs = []; loadAttractions()">
-              <span>{{ c.name }}</span><small>{{ c.province }}</small>
+              <span>{{ c.name }}</span><small>{{ c.province }}<span v-if="c.line && c.line !== '国内'"> · {{ c.line }}</span></small>
             </div>
           </div>
         </div>
@@ -31,7 +31,7 @@
           <input v-model="form.departure" class="input" placeholder="例如：上海" @input="searchCity('departure')" @focus="sugFor = 'departure'" @blur="sugFor = ''" />
           <div v-if="sugFor === 'departure' && citySugs.length" class="sug">
             <div v-for="c in citySugs" :key="c.id" class="s" @mousedown.prevent="form.departure = c.name; citySugs = []">
-              <span>{{ c.name }}</span><small>{{ c.province }}</small>
+              <span>{{ c.name }}</span><small>{{ c.province }}<span v-if="c.line && c.line !== '国内'"> · {{ c.line }}</span></small>
             </div>
           </div>
         </div>

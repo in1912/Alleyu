@@ -110,6 +110,18 @@ try {
   r = await req('/api/cities', { method: 'POST', token: u1, body: { name: '测试市' } });
   ok(r.status === 403, '普通用户增城市 403（仅 admin）');
 
+  // ---- 国际线路（v1.3.0 五线种子） ----
+  console.log('== 国际线路种子 ==');
+  r = await req('/api/cities/lines', { token: admin });
+  const lineMap = {};
+  for (const x of r.j.lines || []) lineMap[x.line] = x.c;
+  ok(['欧洲线', '中亚线', '东亚线', '北美线', '南美线'].every((ln) => (lineMap[ln] || 0) >= 5), '五条国际线路城市数≥5（' + Object.entries(lineMap).map(([k, v]) => k + v).join(' ') + '）');
+  r = await req('/api/cities?q=' + encodeURIComponent('巴黎') + '&line=' + encodeURIComponent('欧洲线'), { token: admin });
+  ok(r.status === 200 && r.j.cities.length === 1 && r.j.cities[0].province === '法国' && r.j.cities[0].line === '欧洲线', '欧洲线检索巴黎（国家/线路字段）');
+  const parisId = r.j.cities[0].id;
+  r = await req(`/api/cities/${parisId}/attractions`, { token: admin });
+  ok(r.j.attractions.length >= 4, '巴黎著名景点直接入库（≥4）');
+
   // ---- AI 配置与 Key 优先级 ----
   console.log('== AI 配置（加密 + 优先级） ==');
   r = await req('/api/ai/global', { method: 'PUT', token: admin, body: { base_url: 'https://api.example.com/v1', model: 'test-model', key: 'sk-global-test' } });
@@ -174,6 +186,24 @@ try {
   ok(r.status === 404, '攻略按用户隔离（admin 也读不到 u1 的）');
   r = await req('/api/guides', { token: u1 });
   ok(r.j.guides.some((g) => g.id === gid), 'u1 列表含自己的攻略');
+
+  // ---- 国际线攻略（高德无海外底图 → 不插图，其余照常） ----
+  console.log('== 国际线攻略（巴黎，桩 AI） ==');
+  r = await req('/api/guides', { method: 'POST', token: u1, body: { destination: '巴黎', days: 2, mustVisits: ['卢浮宫', '埃菲尔铁塔'] } });
+  ok(r.status === 200 && r.j.id, '创建国际线攻略（巴黎）');
+  const igid = r.j.id;
+  let ig = null;
+  for (let i = 0; i < 90; i++) {
+    await sleep(1000);
+    const g = await req(`/api/guides/${igid}`, { token: u1 });
+    if (g.j.guide && (g.j.guide.status === 'done' || g.j.guide.status === 'error')) { ig = g.j.guide; break; }
+  }
+  ok(ig && ig.status === 'done', '国际线攻略生成完成（不超 90s）', ig ? ig.error : '超时');
+  if (ig && ig.status === 'done') {
+    ok((ig.images || []).length === 0, '国际线不插高德图（无海外底图，护栏生效）');
+    ok(ig.content.includes('## 生成来源') && ig.content.includes('国际线路目的地'), '国际线：生成来源页脚 + 无图说明行');
+    ok(/卢浮宫/.test(ig.content) && /埃菲尔铁塔/.test(ig.content), '库内景点进 AI 上下文（正文含卢浮宫/埃菲尔铁塔）');
+  }
 
   // ---- 在线（真实外网） ----
   if (ONLINE) {

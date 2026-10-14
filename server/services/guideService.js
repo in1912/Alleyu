@@ -258,6 +258,11 @@ async function enrichGuide(guideId, params, content, weatherCtx) {
   const cityName = params.destination;
   const lib = libraryAttractions(params.cityId);
 
+  // 国际线路：高德没有海外底图（实测 zoom4 也只渲染中国区域）——地图/照片/坐标解析全部跳过，
+  // 天气（Open-Meteo 全球可用）与 AI 正文、生成来源页脚照常。
+  const cityRow = params.cityId ? db.prepare('SELECT line FROM cities WHERE id=?').get(params.cityId) : null;
+  const intl = !!(cityRow && cityRow.line && cityRow.line !== '国内');
+
   // 1) 天气表插到「一、旅行总览」段末（「## 二、」之前）
   try {
     const wt = weatherTableBlock(weatherCtx);
@@ -266,6 +271,13 @@ async function enrichGuide(guideId, params, content, weatherCtx) {
       if (idx >= 0) content = content.slice(0, idx) + wt + content.slice(idx);
     }
   } catch (e) { console.warn('[enrich] 天气表失败:', e.message); }
+
+  if (intl) {
+    const idx = content.indexOf('\n## 二、');
+    const at = idx >= 0 ? idx : content.length;
+    content = content.slice(0, at) + '\n\n> 🌍 国际线路目的地：高德暂无海外底图，本篇不插路线图与实景图；天气推演与文字攻略不受影响。\n' + content.slice(at);
+    return { content, images };
+  }
 
   // 2) 全文景点识别 + 坐标
   let pois = [];

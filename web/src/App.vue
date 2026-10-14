@@ -22,7 +22,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api, setToken, token } from './api/index.js';
 
@@ -58,6 +58,7 @@ function go(n) {
 async function logout() {
   try { await api('/auth/logout', { method: 'POST' }); } catch { /* 忽略 */ }
   setToken('');
+  me.value = null;
   location.hash = '#/login';
 }
 async function loadMe() {
@@ -69,6 +70,11 @@ async function loadMe() {
   } catch { /* 401 已由 api 统一处理 */ }
 }
 onMounted(loadMe);
+// 登录是 SPA 内跳转（不刷新页面），App 不会重新挂载——路由变化时补拉用户信息，
+// 否则从首页进任何功能页侧栏菜单都是空的
+watch(() => route.fullPath, () => {
+  if (token() && !me.value) loadMe();
+});
 </script>
 
 <style scoped>

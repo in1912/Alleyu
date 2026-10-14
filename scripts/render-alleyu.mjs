@@ -20,19 +20,25 @@ const ok = (c, n) => { if (c) { pass++; console.log('  ✅ ' + n); } else { fail
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 
-// 登录
+// 登录页（先查占位提示已去掉，再走 SPA 登录——全程不整页刷新）
 await page.goto(URL_BASE + '/#/login');
-await page.fill('input[placeholder="用户名"]', 'admin');
-await page.fill('input[placeholder="密码"]', 'admin123');
+const noPlaceholder = await page.locator('input[placeholder="用户名"], input[placeholder="密码"]').count();
+ok(noPlaceholder === 0, '登录框无用户名/密码占位提示');
+await page.fill('input[aria-label="用户名"]', 'admin');
+await page.fill('input[aria-label="密码"]', 'admin123');
 await page.click('button.btn');
 await page.waitForURL('**/#/', { timeout: 8000 });
 ok(true, '登录成功跳首页');
 
 // 首页场景
 await page.waitForSelector('.scene-box svg #bikerRoot', { timeout: 8000 });
-ok(true, '小猪场景渲染');
-const svgCount = await page.locator('.scene-box svg #pigHeadGroup').count();
-ok(svgCount === 1, '小猪+自行车 SVG 结构存在');
+ok(true, '骑手场景渲染');
+const svgCount = await page.locator('.scene-box svg #riderHeadGroup').count();
+ok(svgCount === 1, '兔子+自行车 SVG 结构存在');
+const earCount = await page.locator('.scene-box svg #rabbitFrontEar').count();
+ok(earCount === 1, '兔耳朵存在');
+const furGrad = await page.locator('.scene-box svg #furGrad').count();
+ok(furGrad === 1 && (await page.locator('.scene-box svg #pigSkinGrad').count()) === 0, '乳白毛色渐变（旧猪皮渐变已除）');
 const hasSky = await page.locator('.scene-box svg rect[fill="url(#skyGrad)"]').count();
 ok(hasSky === 0, '天空已移除（透明融入页面）');
 const btns = await page.locator('.scene-box button').count();
@@ -58,6 +64,9 @@ await page.screenshot({ path: path.join(IMG_DIR, '首页.png'), fullPage: false 
 await page.click('.searchbar .go');
 await page.waitForURL('**/#/plan**', { timeout: 8000 });
 ok(true, '回车/做攻略 → 计划表单');
+// 关键回归：SPA 登录后不经整页刷新直达功能页，侧栏菜单必须非空（v1.1.0 修的空菜单 bug）
+const navCount = await page.locator('.side .nav-item').count();
+ok(navCount >= 5, 'SPA 登录后侧栏菜单非空（修复空菜单）');
 
 // 计划表单元素
 await page.waitForSelector('input[placeholder="例如：杭州"]', { timeout: 8000 });
@@ -91,6 +100,8 @@ if (cards > 0) {
   await page.waitForTimeout(500);
   await page.screenshot({ path: path.join(IMG_DIR, '攻略详情.png'), fullPage: false });
   ok(true, '攻略详情渲染（markdown）');
+  const mdText = await page.locator('.md').innerText();
+  ok(!/本地桩输出|ALLEYU_AI_STUB/.test(mdText), '攻略正文无桩提示横幅');
 } else {
   console.log('  ⚠️ 无历史攻略，跳过详情截图');
 }

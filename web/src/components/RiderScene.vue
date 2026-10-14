@@ -1,14 +1,14 @@
-// 小猪骑车场景：从 cy.html 移植，只保留小猪+自行车+马路+树木+山丘。
-// 删掉：蓝天/星星/日月/云/天气粒子/车铃按钮/披风皇冠墨镜/路牌/Toast。
+// 乳白兔子骑车场景：从 cy.html 移植（原版小猪，v1.1.0 按用户要求改成兔子），
+// 只保留骑手+自行车+马路+树木+山丘。删掉：蓝天/星星/日月/云/天气粒子/车铃按钮/披风皇冠墨镜/路牌/Toast。
 // 天空区域透明 → 页面背景直接透出；容器底缘 CSS 渐隐无框感。
 // 对外暴露 jump()：首页输入框每敲一个字符触发一次【兔跳特技】。
 <template>
   <div class="scene-box" ref="box">
     <svg :viewBox="viewBox" preserveAspectRatio="xMidYMax slice">
       <defs>
-        <radialGradient id="pigSkinGrad" cx="35%" cy="30%" r="70%">
-          <stop offset="0%" stop-color="#ffc2d4" />
-          <stop offset="100%" stop-color="#ff8fab" />
+        <radialGradient id="furGrad" cx="35%" cy="30%" r="70%">
+          <stop offset="0%" stop-color="#fffdf7" />
+          <stop offset="100%" stop-color="#efe7d6" />
         </radialGradient>
       </defs>
 
@@ -33,15 +33,15 @@
 
       <ellipse id="bikeGroundShadow" cx="400" cy="400" rx="115" ry="12" fill="#0f172a" opacity="0.22" />
 
-      <!-- 小猪 + 自行车整体 -->
+      <!-- 兔子 + 自行车整体 -->
       <g id="bikerRoot">
         <g id="bikerTiltGroup">
           <g id="exhaustParticles"></g>
 
           <g id="backLegGroup">
-            <line id="leftThigh" x1="340" y1="250" x2="380" y2="290" stroke="#f472b6" stroke-width="20" stroke-linecap="round" />
-            <line id="leftCalf" x1="380" y1="290" x2="400" y2="340" stroke="#f472b6" stroke-width="15" stroke-linecap="round" />
-            <ellipse id="leftHoof" cx="400" cy="340" rx="11" ry="6" fill="#be185d" />
+            <line id="leftThigh" x1="340" y1="250" x2="380" y2="290" stroke="#f3ecdd" stroke-width="20" stroke-linecap="round" />
+            <line id="leftCalf" x1="380" y1="290" x2="400" y2="340" stroke="#ece2cf" stroke-width="15" stroke-linecap="round" />
+            <ellipse id="leftHoof" cx="400" cy="340" rx="11" ry="6" fill="#fbf7ee" stroke="#b3a68c" stroke-width="2" />
           </g>
 
           <line id="leftCrankArm" x1="385" y1="340" x2="385" y2="310" stroke="#64748b" stroke-width="6" stroke-linecap="round" />
@@ -101,38 +101,47 @@
             </g>
           </g>
 
-          <path id="leftArmPath" d="M 366 196 Q 402 222 422 222" fill="none" stroke="#f472b6" stroke-width="15" stroke-linecap="round" />
+          <!-- 手臂双层：深色衬底 + 乳白上层（浅色肢体在浅背景上必须有描边感） -->
+          <path id="leftArmUnder" d="M 366 196 Q 402 222 422 222" fill="none" stroke="#b3a68c" stroke-width="19" stroke-linecap="round" />
+          <path id="leftArmPath" d="M 366 196 Q 402 222 422 222" fill="none" stroke="#f6f1e5" stroke-width="14" stroke-linecap="round" />
 
-          <g id="pigTorsoAndHead">
-            <g id="pigTail" transform="translate(310, 224)">
-              <path d="M 0 0 C -18 -8 -22 -25 -8 -24 C 2 -23 -2 -8 -16 -12 C -26 -15 -26 -30 -16 -33" fill="none" stroke="#ff8fab" stroke-width="5.5" stroke-linecap="round" />
+          <g id="riderTorsoAndHead">
+            <g id="rabbitTail" transform="translate(310, 224)">
+              <circle cx="-4" cy="-8" r="11" fill="#fdfaf3" stroke="#c9bda6" stroke-width="2.5" />
+              <path d="M -12 -12 Q -6 -16 -2 -11" fill="none" stroke="#e3d8c4" stroke-width="2" stroke-linecap="round" />
             </g>
-            <ellipse cx="348" cy="212" rx="42" ry="37" transform="rotate(-14 348 212)" fill="url(#pigSkinGrad)" stroke="#fb7185" stroke-width="2.5" />
+            <ellipse cx="348" cy="212" rx="42" ry="37" transform="rotate(-14 348 212)" fill="url(#furGrad)" stroke="#b9ac93" stroke-width="2.5" />
             <path d="M 314 226 Q 348 218 378 232 A 40 35 0 0 1 314 226 Z" fill="#3b82f6" opacity="0.9" />
             <line x1="335" y1="224" x2="342" y2="185" stroke="#3b82f6" stroke-width="7" stroke-linecap="round" />
             <circle cx="337" cy="222" r="3.5" fill="#fde047" />
 
-            <g id="pigBackEar" transform="translate(352, 118)">
-              <path d="M 0 0 C -12 -24 -36 -18 -26 6 C -20 16 -6 12 0 0 Z" fill="#f472b6" stroke="#ec4899" stroke-width="2" />
+            <g id="rabbitBackEar" transform="translate(384, 122)">
+              <path d="M 0 0 C 14 -24 18 -58 8 -78 C -4 -70 -8 -26 -2 -2 Z" fill="#ece3d0" stroke="#b9ac93" stroke-width="2.5" />
+              <path d="M 1 -8 C 9 -26 11 -50 5 -64 C -2 -54 -4 -26 -1 -12 Z" fill="#f0d4dc" opacity="0.8" />
             </g>
 
-            <g id="pigHeadGroup" transform="translate(366, 150)">
-              <circle cx="0" cy="0" r="39" fill="url(#pigSkinGrad)" stroke="#fb7185" stroke-width="2.5" />
-              <ellipse cx="10" cy="12" rx="10" ry="6.5" fill="#fb7185" opacity="0.55" />
-              <g transform="translate(35, -3) rotate(8)">
-                <ellipse cx="0" cy="0" rx="13" ry="16" fill="#ffccd5" stroke="#fb7185" stroke-width="2.5" />
-                <ellipse cx="-3" cy="-4" rx="2.8" ry="4.5" fill="#be185d" />
-                <ellipse cx="5" cy="-2" rx="2.8" ry="4.5" fill="#be185d" />
+            <g id="riderHeadGroup" transform="translate(366, 150)">
+              <circle cx="0" cy="0" r="39" fill="url(#furGrad)" stroke="#b9ac93" stroke-width="2.5" />
+              <!-- 腮红 -->
+              <circle cx="28" cy="10" r="5" fill="#f8cdd7" opacity="0.8" />
+              <circle cx="-4" cy="12" r="4" fill="#f8cdd7" opacity="0.6" />
+              <!-- 兔鼻（小三角）+ W 形嘴 + 胡须 -->
+              <path d="M 16 3 L 26 3 L 21 10 Z" fill="#ec8fa8" stroke="#ec8fa8" stroke-width="2" stroke-linejoin="round" />
+              <path d="M 21 10 Q 17 16 12 12 M 21 10 Q 26 16 30 12" fill="none" stroke="#a8846f" stroke-width="2.5" stroke-linecap="round" />
+              <g stroke="#c9bda6" stroke-width="1.5" stroke-linecap="round">
+                <line x1="10" y1="4" x2="-6" y2="2" />
+                <line x1="10" y1="9" x2="-6" y2="11" />
+                <line x1="32" y1="3" x2="46" y2="1" />
+                <line x1="32" y1="8" x2="46" y2="10" />
               </g>
-              <g id="pigEyeOpen" transform="translate(16, -11)">
+              <g id="riderEyeOpen" transform="translate(16, -11)">
                 <circle cx="0" cy="0" r="5.5" fill="#1e293b" />
                 <circle cx="-1.8" cy="-2" r="2.2" fill="#ffffff" />
               </g>
-              <path id="pigEyeHappy" d="M 10 -11 Q 16 -19 22 -11" fill="none" stroke="#1e293b" stroke-width="3.5" stroke-linecap="round" opacity="0" />
-              <path id="pigMouth" d="M 14 14 Q 23 23 30 13" fill="none" stroke="#9f1239" stroke-width="3" stroke-linecap="round" />
-              <g id="pigFrontEar" transform="translate(-14, -22)">
-                <path d="M 0 0 C -18 -22 -42 -12 -30 12 C -22 22 -6 14 0 0 Z" fill="#ffb3c6" stroke="#fb7185" stroke-width="2.5" />
-                <path d="M -5 2 C -15 -12 -30 -6 -22 8 Z" fill="#fb7185" opacity="0.45" />
+              <path id="riderEyeHappy" d="M 10 -11 Q 16 -19 22 -11" fill="none" stroke="#1e293b" stroke-width="3.5" stroke-linecap="round" opacity="0" />
+              <g id="rabbitFrontEar" transform="translate(-16, -26)">
+                <path d="M 0 0 C -15 -24 -17 -56 -6 -72 C 7 -66 13 -26 8 -2 Z" fill="url(#furGrad)" stroke="#b9ac93" stroke-width="2.5" />
+                <path d="M -3 -8 C -11 -26 -12 -50 -5 -62 C 3 -52 6 -26 3 -10 Z" fill="#f6c3cf" opacity="0.85" />
               </g>
               <g transform="translate(-4, -36)">
                 <path d="M -24 6 A 24 20 0 0 1 24 6 Z" fill="#facc15" stroke="#ca8a04" stroke-width="2.5" />
@@ -151,14 +160,15 @@
           <line id="rightCrankArm" x1="385" y1="340" x2="385" y2="370" stroke="#94a3b8" stroke-width="6.5" stroke-linecap="round" />
 
           <g id="frontLegGroup">
-            <line id="rightThigh" x1="340" y1="248" x2="375" y2="295" stroke="#ff8fab" stroke-width="22" stroke-linecap="round" />
-            <line id="rightCalf" x1="375" y1="295" x2="385" y2="370" stroke="#ff8fab" stroke-width="16" stroke-linecap="round" />
-            <ellipse id="rightHoof" cx="385" cy="370" rx="12" ry="6.5" fill="#9f1239" />
+            <line id="rightThigh" x1="340" y1="248" x2="375" y2="295" stroke="#f3ecdd" stroke-width="22" stroke-linecap="round" />
+            <line id="rightCalf" x1="375" y1="295" x2="385" y2="370" stroke="#ece2cf" stroke-width="16" stroke-linecap="round" />
+            <ellipse id="rightHoof" cx="385" cy="370" rx="12" ry="6.5" fill="#fbf7ee" stroke="#b3a68c" stroke-width="2" />
           </g>
           <rect id="rightPedalPad" x="374" y="366" width="22" height="7" rx="3" fill="#0f172a" />
 
-          <path id="rightArmPath" d="M 356 202 Q 396 232 426 223" fill="none" stroke="#ff8fab" stroke-width="16" stroke-linecap="round" />
-          <circle cx="426" cy="223" r="7" fill="#9f1239" />
+          <path id="rightArmUnder" d="M 356 202 Q 396 232 426 223" fill="none" stroke="#b3a68c" stroke-width="20" stroke-linecap="round" />
+          <path id="rightArmPath" d="M 356 202 Q 396 232 426 223" fill="none" stroke="#f6f1e5" stroke-width="15" stroke-linecap="round" />
+          <circle cx="426" cy="223" r="7" fill="#ec8fa8" />
         </g>
       </g>
 
@@ -336,13 +346,13 @@ function animateLoop() {
   dom.leftHoof.setAttribute('cx', lPedalX + 3); dom.leftHoof.setAttribute('cy', lPedalY - 2);
 
   const headTilt = Math.sin(state.pedalAngle) * 2.2;
-  dom.pigTorsoAndHead.setAttribute('transform', `translate(0, ${bodyBounceY}) rotate(${headTilt} 350 210)`);
+  dom.riderTorsoAndHead.setAttribute('transform', `translate(0, ${bodyBounceY}) rotate(${headTilt} 350 210)`);
   const windStrength = state.currentSpeed * 0.35;
   const earFlutter = Math.sin(frameCount * 0.22) * (3 + state.currentSpeed * 0.12);
-  dom.pigFrontEar.setAttribute('transform', `translate(-14, -22) rotate(${-windStrength + earFlutter})`);
-  dom.pigBackEar.setAttribute('transform', `translate(352, 118) rotate(${-windStrength * 0.8 - earFlutter})`);
+  dom.rabbitFrontEar.setAttribute('transform', `translate(-16, -26) rotate(${-windStrength + earFlutter})`);
+  dom.rabbitBackEar.setAttribute('transform', `translate(384, 122) rotate(${-windStrength * 0.8 - earFlutter})`);
   const tailWag = Math.sin(frameCount * 0.18) * (6 + state.currentSpeed * 0.15);
-  dom.pigTail.setAttribute('transform', `translate(310, 224) rotate(${tailWag})`);
+  dom.rabbitTail.setAttribute('transform', `translate(310, 224) rotate(${tailWag})`);
   const bladeWidth = Math.max(3, Math.abs(Math.cos(frameCount * (0.15 + state.currentSpeed * 0.008))) * 22);
   dom.hatPropellerBlade.setAttribute('rx', bladeWidth);
 
@@ -388,13 +398,13 @@ function animateLoop() {
   // 眨眼 / 开心笑眼
   if (state.happyEyeTimer > 0) {
     state.happyEyeTimer--;
-    dom.pigEyeOpen.setAttribute('opacity', '0');
-    dom.pigEyeHappy.setAttribute('opacity', '1');
+    dom.riderEyeOpen.setAttribute('opacity', '0');
+    dom.riderEyeHappy.setAttribute('opacity', '1');
   } else {
     state.blinkTimer++;
     const isBlinking = (state.blinkTimer % 210) > 202;
-    dom.pigEyeOpen.setAttribute('opacity', isBlinking ? '0' : '1');
-    dom.pigEyeHappy.setAttribute('opacity', isBlinking ? '1' : '0');
+    dom.riderEyeOpen.setAttribute('opacity', isBlinking ? '0' : '1');
+    dom.riderEyeHappy.setAttribute('opacity', isBlinking ? '1' : '0');
   }
 
   rafId = requestAnimationFrame(animateLoop);
@@ -423,14 +433,14 @@ onMounted(() => {
     rightPedalPad: $('rightPedalPad'), leftPedalPad: $('leftPedalPad'),
     rightThigh: $('rightThigh'), rightCalf: $('rightCalf'), rightHoof: $('rightHoof'),
     leftThigh: $('leftThigh'), leftCalf: $('leftCalf'), leftHoof: $('leftHoof'),
-    pigTorsoAndHead: $('pigTorsoAndHead'), pigFrontEar: $('pigFrontEar'), pigBackEar: $('pigBackEar'),
-    pigTail: $('pigTail'), hatPropellerBlade: $('hatPropellerBlade'),
+    riderTorsoAndHead: $('riderTorsoAndHead'), rabbitFrontEar: $('rabbitFrontEar'), rabbitBackEar: $('rabbitBackEar'),
+    rabbitTail: $('rabbitTail'), hatPropellerBlade: $('hatPropellerBlade'),
     bikerRoot: $('bikerRoot'), bikerTiltGroup: $('bikerTiltGroup'),
     bikeGroundShadow: $('bikeGroundShadow'), roadDashLine: $('roadDashLine'),
-    pigEyeOpen: $('pigEyeOpen'), pigEyeHappy: $('pigEyeHappy'),
+    riderEyeOpen: $('riderEyeOpen'), riderEyeHappy: $('riderEyeHappy'),
   };
   initScenery();
-  // 点击小猪也跳一下（顺手的小互动）
+  // 点击兔子也跳一下（顺手的小互动）
   root.addEventListener('click', jump);
   rafId = requestAnimationFrame(animateLoop);
 });

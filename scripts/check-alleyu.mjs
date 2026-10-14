@@ -128,6 +128,22 @@ try {
   r = await req('/api/ai/config', { token: u1 });
   ok(r.status === 200 && r.j.has_key === false && r.j.base_url === '', '普通用户读自己配置（空）');
 
+  // ---- 高德 Key 设置 ----
+  console.log('== 高德 Key 设置 ==');
+  r = await req('/api/settings', { token: u1 });
+  ok(r.status === 403, '普通用户读设置 403');
+  r = await req('/api/settings', { method: 'PUT', token: admin, body: { amap_key: 'not-hex-zzz' } });
+  ok(r.status === 400, '高德 Key 非法格式 400');
+  r = await req('/api/settings/amap/reset', { method: 'POST', token: admin });
+  ok(r.status === 200 && r.j.ok === true, '恢复内置高德 Key');
+
+  // v1.1.0 起桩是「无配置时兜底」：配了真实 Key 一律走真接口。
+  // 下面攻略生成要走桩，必须先清掉全局配置（上面写入的是假地址 example.com）
+  r = await req('/api/ai/global', { method: 'PUT', token: admin, body: { base_url: '', model: '', key: '' } });
+  ok(r.status === 200, '清空全局 AI 配置（让桩兜底生效）');
+  r = await req('/api/ai/status', { token: admin });
+  ok(r.j.effective_source === 'none', '清空后 effective_source=none');
+
   // ---- 攻略生成（桩） ----
   console.log('== 攻略生成（桩 AI 全链路） ==');
   await req(`/api/users/${u1id}`, { method: 'PUT', token: admin, body: { allowed_pages: [], can_use_ai: true } });
@@ -162,6 +178,8 @@ try {
     console.log('== 在线真实接口 ==');
     r = await req('/api/poi?q=' + encodeURIComponent('西湖') + '&city=' + encodeURIComponent('杭州'), { token: admin });
     ok(r.status === 200 && r.j.pois.length > 0 && r.j.pois[0].location, '高德 POI 检索（真实 Key）');
+    r = await req('/api/settings/amap/test', { method: 'POST', token: admin, body: {} });
+    ok(r.status === 200 && r.j.ok === true, '高德 Key 连通测试（种子 Key 真连）');
     r = await req('/api/weather?q=' + encodeURIComponent('杭州') + '&mode=forecast&days=5', { token: admin });
     ok(r.status === 200 && r.j.daily && r.j.daily.length >= 4, 'Open-Meteo 预报');
     r = await req('/api/weather?q=' + encodeURIComponent('昆明') + '&mode=history&month=3', { token: admin });

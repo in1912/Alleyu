@@ -63,10 +63,10 @@ async function testConnection(cfg) {
 }
 
 // 流式对话：async generator，逐段 yield 文本增量。
-// ALLEYU_AI_STUB=1 时走本地桩（测试/演示：不联网，输出一份遵循固定框架的假攻略，
-// 并在文中带出 params，方便 e2e 断言 prompt 组装链路）。
+// ALLEYU_AI_STUB=1 是「无 Key 环境的兜底」而非强制覆盖：只要解析出了真实配置
+// （个人或全局），一律走真接口——否则用户配了 Key 仍出桩文案，纯属坑人。
 async function* streamChat(cfg, messages, { maxTokens = 8000, temperature = 0.5 } = {}) {
-  if (process.env.ALLEYU_AI_STUB === '1') {
+  if (!cfg || cfg.source === 'stub') {
     yield* stubStream(messages);
     return;
   }
@@ -113,7 +113,7 @@ function stubGuideText(messages) {
   const spot = (arr, i) => (arr[i] || '城市地标广场');
   return `# 【目的地】3日游完整攻略（AI 桩输出）
 
-> ⚠️ 这是 ALLEYU_AI_STUB=1 的本地桩输出，用于无 Key 环境的测试与演示，不是真实攻略。
+<!-- alleyu:stub 本篇为 ALLEYU_AI_STUB 本地桩输出（无 Key 环境的测试与演示），非真实攻略 -->
 
 ## 一、旅行总览
 1.旅行主题：${mentioned('出行人群') || '休闲'}慢游

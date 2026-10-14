@@ -1,12 +1,12 @@
 <template>
   <div class="login-page">
     <div class="card dlg-card">
-      <div class="pig">🐷</div>
+      <div class="pig">🐰</div>
       <h2>游巷 <small>AI 旅行札记</small></h2>
       <label class="fld">用户名</label>
-      <input v-model="username" class="input" placeholder="用户名" @keyup.enter="doLogin" />
+      <input v-model="username" class="input" aria-label="用户名" autocomplete="username" @keyup.enter="doLogin" />
       <label class="fld" style="margin-top: 12px">密码</label>
-      <input v-model="password" type="password" class="input" placeholder="密码" @keyup.enter="doLogin" />
+      <input v-model="password" type="password" class="input" aria-label="密码" autocomplete="current-password" @keyup.enter="doLogin" />
       <p v-if="err" class="err-text">{{ err }}</p>
       <button class="btn" style="width: 100%; margin-top: 16px" :disabled="busy" @click="doLogin">
         {{ busy ? '登录中…' : '登录' }}

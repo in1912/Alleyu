@@ -49,10 +49,18 @@
       <div class="grid2">
         <div>
           <label class="fld">高德 Web 服务 Key{{ g.amapSet ? '（已配置）' : '' }}</label>
-          <input v-model="g.amapKey" class="input" placeholder="32 位十六进制 Key（地图/图片/POI 用）" />
+          <input v-model="g.amapKey" class="input" placeholder="32 位十六进制（留空可测已保存的）" />
         </div>
-        <div style="align-self: end"><button class="btn ghost" @click="saveAmap">保存高德 Key</button></div>
+        <div style="align-self: end; display: flex; gap: 8px; flex-wrap: wrap">
+          <button class="btn ghost" @click="saveAmap">保存</button>
+          <button class="btn ghost" @click="testAmap">测试连通</button>
+          <button class="btn ghost" @click="resetAmap">恢复内置</button>
+        </div>
       </div>
+      <p v-if="amapMsg" :class="amapOk ? 'ok-text' : 'err-text'" style="margin: 8px 0 0; font-size: 13px">
+        {{ amapMsg }}
+      </p>
+      <p class="hint">注意：必须是「Web服务」类型的 Key，「Web端(JS API)」类型调不了 REST 接口（会报 10009）。测试连通会给出具体原因。</p>
       <p class="hint">用户级授权在「用户管理」里按人勾选「允许使用 AI」。</p>
     </div>
 
@@ -76,7 +84,7 @@
           <tr><td>Node</td><td>{{ sys.node }}（{{ sys.platform }}）</td></tr>
           <tr><td>用户 / 攻略</td><td>{{ sys.users }} / {{ sys.guides }}</td></tr>
           <tr><td>城市 / 景点</td><td>{{ sys.cities }} / {{ sys.attractions }}</td></tr>
-          <tr><td>AI 通道</td><td>{{ sys.stub_ai ? '⚠️ 桩模式（ALLEYU_AI_STUB=1，非真实模型）' : '真实接口' }}</td></tr>
+          <tr><td>AI 通道</td><td>{{ sys.stub_ai ? 'ALLEYU_AI_STUB=1（未配置 Key 时本地桩兜底，配了 Key 一律走真接口）' : '真实接口' }}</td></tr>
         </tbody>
       </table>
     </div>
@@ -98,6 +106,7 @@ const pwd = reactive({ old: '', neu: '' });
 const pMsg = ref(''); const pOk = ref(false);
 const gMsg = ref(''); const gOk = ref(false);
 const pwdMsg = ref(''); const pwdOk = ref(false);
+const amapMsg = ref(''); const amapOk = ref(false);
 const testModels = ref([]);
 const sys = ref(null);
 
@@ -141,8 +150,24 @@ async function saveAmap() {
   try {
     await api('/settings', { method: 'PUT', body: { amap_key: g.amapKey } });
     g.amapSet = !!g.amapKey;
-    alert('高德 Key 已保存');
-  } catch (e) { alert(e.message); }
+    amapOk.value = true; amapMsg.value = '高德 Key 已保存';
+  } catch (e) { amapOk.value = false; amapMsg.value = e.message; }
+}
+async function testAmap() {
+  amapMsg.value = '测试中…'; amapOk.value = false;
+  try {
+    const j = await api('/settings/amap/test', { method: 'POST', body: { key: g.amapKey } });
+    if (j.ok) { amapOk.value = true; amapMsg.value = '✅ 高德连通正常'; }
+    else amapMsg.value = `❌ ${j.info}${j.infocode ? `（${j.infocode}）` : ''}${j.hint ? '——' + j.hint : ''}`;
+  } catch (e) { amapMsg.value = e.message; }
+}
+async function resetAmap() {
+  if (!confirm('恢复为项目内置的高德 Key？（自己配的 Key 会被覆盖）')) return;
+  try {
+    await api('/settings/amap/reset', { method: 'POST' });
+    g.amapSet = true; g.amapKey = '';
+    amapOk.value = true; amapMsg.value = '已恢复内置 Key';
+  } catch (e) { amapOk.value = false; amapMsg.value = e.message; }
 }
 async function savePwd() {
   pwdMsg.value = '';

@@ -41,7 +41,22 @@ const noteTimer = 0;
 let es = null;
 
 marked.setOptions({ breaks: true, gfm: true });
-const html = computed(() => marked.parse(streamed.value || ''));
+
+// 展示前清洗：①去掉桩模式横幅（老数据存过整行提示）②去掉九模块框架正文之外的
+// AI 客套/杂项（第一个 markdown 标题之前的内容不显示，正文从框架标题起）
+function cleanMd(raw) {
+  let t = String(raw || '');
+  t = t.replace(/^>?\s*⚠?️?\s*这是\s*ALLEYU_AI_STUB=1\s*的本地桩输出[^\n]*\n?/gm, '');
+  const lines = t.split('\n');
+  const isHeading = (s) => /^#{1,6}\s/.test(s);
+  if (lines.length && !isHeading(lines[0])) {
+    const hi = lines.findIndex(isHeading);
+    if (hi > 0) t = lines.slice(hi).join('\n');
+  }
+  return t;
+}
+const clean = computed(() => cleanMd(streamed.value));
+const html = computed(() => marked.parse(clean.value));
 
 function connect() {
   es = new EventSource(withToken('/api/guides/' + id + '/stream'));
@@ -76,7 +91,7 @@ async function loadGuide() {
   }
 }
 function copy() {
-  navigator.clipboard.writeText(streamed.value).then(() => {
+  navigator.clipboard.writeText(clean.value).then(() => {
     alert('已复制全文');
   });
 }

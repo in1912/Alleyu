@@ -1,9 +1,9 @@
 <template>
   <div class="home-page">
     <div class="home-wrap">
-      <PigScene ref="pigRef" />
+      <RiderScene ref="riderRef" />
       <h1 class="home-title">游巷</h1>
-      <p class="home-sub">输入一个目的地，小猪骑车带你去 —— 每敲一个字，它就兔跳一下 🐰</p>
+      <p class="home-sub">输入一个目的地，乳白小兔骑车带你去 —— 每敲一个字，它就兔跳一下 🐰</p>
 
       <div class="searchbar">
         <input
@@ -40,10 +40,10 @@
 
 <script setup>
 import { onMounted, ref } from 'vue';
-import PigScene from '../components/PigScene.vue';
+import RiderScene from '../components/RiderScene.vue';
 import { api, setToken, token } from '../api/index.js';
 
-const pigRef = ref(null);
+const riderRef = ref(null);
 const inputRef = ref(null);
 const q = ref('');
 const showSug = ref(false);
@@ -55,7 +55,7 @@ let sugTimer = 0;
 // 每敲进一个字符 → 兔跳一次（删除不触发）
 function onType(e) {
   if (e && e.inputType && !e.inputType.startsWith('insert')) return;
-  if (pigRef.value) pigRef.value.jump();
+  if (riderRef.value) riderRef.value.jump();
   clearTimeout(sugTimer);
   sugTimer = setTimeout(loadSug, 180);
 }

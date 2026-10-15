@@ -1,0 +1,6 @@
+# 行尾：本机 core.autocrlf=true，不钉死的话 macOS 的 bash 启动器会被检出成 CRLF
+# （症状：双击 start.command 报 bad interpreter: /bin/bash^M），而分发包是照着工作区文件打的。
+# 批处理不加规则：Windows 检出成 CRLF、macOS 检出成 LF，两边都没问题。
+start.command text eol=lf
+*.command     text eol=lf
+*.sh          text eol=lf

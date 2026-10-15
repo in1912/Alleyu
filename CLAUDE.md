@@ -11,9 +11,9 @@
 ```bash
 npm start                                     # 起 9610（start.bat 同效）；Node >= 22.5（node:sqlite）
 ALLEYU_AI_STUB=1 node server/index.js         # 桩 AI 模式（不调外网；配了真 Key 仍走真接口）
-node scripts/check-alleyu.mjs                 # 离线自检 145 项（独立临时 DATA_DIR，端口 9690）
-node scripts/check-alleyu.mjs --online        # +4 项真实高德/Open-Meteo 断言（共 149）
-node scripts/render-alleyu.mjs                # Playwright 渲染自检 60 项（自起 FORCE_STUB 桩服务器，独占 9610；playwright 已是 devDependency）
+node scripts/check-alleyu.mjs                 # 离线自检 181 项（独立临时 DATA_DIR，端口 9690）
+node scripts/check-alleyu.mjs --online        # +4 项真实高德/Open-Meteo 断言（共 185）
+node scripts/render-alleyu.mjs                # Playwright 渲染自检 89 项（自起 FORCE_STUB 桩服务器，独占 9610；playwright 已是 devDependency）
 cd web && npm run build                       # 前端 → dist/<时间戳>/ + .latest
 ```
 
@@ -54,10 +54,11 @@ Windows 注意：npm 卡住加 `--registry=https://registry.npmmirror.com`；重
 - 首页骑手是乳白兔子（RiderScene.vue，v1.0 的 PigScene.vue 已删）：浅色角色在浅色背景上，手臂用双层描边（#b3a68c 底衬 + #f6f1e5 乳白面层）保对比度。
 - guides 严格 user_id 隔离（admin 也读不到他人的，by design）；城市/景点库全局共享。
 - 前端 dist 随 git 分发（.gitignore 不忽略 web/dist/），Dockerfile COPY 依赖它；改前端必须 rebuild + commit。
+- **v1.8.0 游记整理**：journals/journal_photos 两表（meta_json/spots_json 存问答与景点勾选；迁移=CREATE TABLE IF NOT EXISTS 幂等）；journalRoutes（照片 base64 JSON 上传 route 级 40mb 解析器——**全局 express.json 必须 ≥12mb**，8MB 照片 base64 ~10.7mb，全局 2mb 会在到达 route 前被 413 掐掉（v1.8.0 实测踩坑：route 级 limit 实际是兜底、全局 parser 先跑）；magic byte 校验、8MB/张按解码真实字节数、原图落 `data/journal_photos/<id>/`）；journalService（buildMessages 问答→提示词、照片以 `- [景点] 图N：配文` 行进上下文、正文图片用 `![说明](photo:N)` 占位 **N=照片 sort 值**、captionMessages 30字/参考用户稿两态、titleMessages ≤20字、run() 与 guideService 同构：600ms 节流写库+SSE 400ms 轮询+minChars=600 过短重试 3 次——**stubJournalText 最短 652 字必须 >600**，桩短了桩模式必失败）。photo:N 占位三端一致：前端 mdWithPhotos 换 `<img src=…?token=>`、PDF extraImages['photo:'+sort]=Buffer、PNG journalPng.js 按 sort 换 URL——照片删了退化为 alt 文字不炸。莫兰迪 5 套配色双端常量（web/src/journalPalettes.js ⇄ pdfService.PALETTES 同值，改要两边同步）；pdfService.renderJournalPdf 独立实现不动 renderGuidePdf（12 条 check 依赖）；long 模式两遍渲染（14400pt 量高页测 y→真页，PDF 页高上限）；A4=分页+页脚含配色名。PNG 长图在**浏览器 canvas**（journalPng.js 两遍：先量高再画，32k px 上限超了明确报错）。游记权限并入 'guides' page（auth.js pageForPath 前缀 /journals|/journal）；can_use_ai 闸三个 AI 动作（配文/标题/生成），草稿与手写登录即可；他人 404 同攻略。游客模式：router 守卫放行 login/share/home，HomeView 右上角登录/退出、游客不拉 /cities 联想、goPlan/goJournal 拦截去登录页；**首页 .searchbar .go 是绝对定位 right:6px——加第二个按钮必须给 right 偏移（.journal-go right:110px），否则两按钮叠死（v1.8.0 render 抓出的真 bug）**。
 
 ## 发版收尾清单
 
-1. 两个自检全绿（check 145/145 或 --online 149/149；render 60/60——render 前先停 9610 上的一切服务，它要独占端口自起桩服务器）
+1. 两个自检全绿（check 181/181 或 --online 185/185；render 89/89——render 前先停 9610 上的一切服务，它要独占端口自起桩服务器；render 会往真实 data/ 写一篇测试游记+照片，脚本末尾有清理，没清掉就手工删 journals 表最后一行 + data/journal_photos/<id>/）
 2. 改了前端 → rebuild，确认 dist/.latest 指向新目录
 3. README 截图用 render-alleyu.mjs 重新生成（img/ 文件名=页面名）
 4. 提交推送双远程：github `git@github.com:in1912/Alleyu.git` + gitea `https://gitea.in1912.cc/in1912/Alleyu.git`，push 后 ls-remote 核对

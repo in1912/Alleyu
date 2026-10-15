@@ -9,7 +9,9 @@ const { resolveUser, pageForPath, tabForPath, canAccess, initAdmin } = require('
 
 const app = express();
 app.disable('x-powered-by');
-app.use(express.json({ limit: '2mb' }));
+// 上限 12mb：游记照片走 base64 JSON 上传（8MB 照片 base64 后 ~10.7mb，route 级再按真实字节数卡 8MB/张；
+// 全局 parser 先跑，限太低会在到达 route 校验前就 413——journalRoutes 里的 40mb 解析器实际是兜底）
+app.use(express.json({ limit: '12mb' }));
 
 // 免登录通道（前缀匹配，相对 /api 挂载点的路径）：登录、健康检查、系统信息、图片直链（<img>/EventSource 带不了头）、分享公开读
 const EXEMPT = ['auth/login', 'health', 'system-info', 'amap/mapimg', 'amap/photo', 'share'];
@@ -37,6 +39,7 @@ app.use('/api/users', require('./routes/userRoutes'));
 app.use('/api/ai', require('./routes/aiRoutes'));
 app.use('/api', require('./routes/cityRoutes'));      // /api/cities /api/attractions /api/poi /api/import-poi
 app.use('/api/guides', require('./routes/guideRoutes'));
+app.use('/api/journals', require('./routes/journalRoutes')); // v1.8.0 游记整理
 app.use('/api/share', require('./routes/shareRoutes')); // 公开分享读（EXEMPT：token 即凭证）
 app.use('/api/amap', require('./routes/amapRoutes'));
 app.use('/api/weather', require('./routes/weatherRoutes'));

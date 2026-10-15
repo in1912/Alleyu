@@ -38,11 +38,13 @@ const ICONS = {
   weather: '<path d="M12 2v2"/><path d="m4.9 4.9 1.4 1.4"/><path d="M20 12h2"/><path d="m19.1 4.9-1.4 1.4"/><path d="M15.9 12.6a4 4 0 0 0-5.9-4.1"/><path d="M13 22H7a5 5 0 1 1 4.9-6H13a3 3 0 0 1 0 6z"/>',
   sliders: '<line x1="21" y1="4" x2="14" y2="4"/><line x1="10" y1="4" x2="3" y2="4"/><line x1="21" y1="12" x2="12" y2="12"/><line x1="8" y1="12" x2="3" y2="12"/><line x1="21" y1="20" x2="16" y2="20"/><line x1="12" y1="20" x2="3" y2="20"/><line x1="14" y1="2" x2="14" y2="6"/><line x1="8" y1="10" x2="8" y2="14"/><line x1="16" y1="18" x2="16" y2="22"/>',
   users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  pen: '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
 };
 
 const ALL_NAV = [
   { to: '/plan', label: '生成攻略', ic: 'compass', page: 'guides' },
   { to: '/history', label: '我的攻略', ic: 'book', page: 'guides' },
+  { to: '/journals', label: '游记整理', ic: 'pen', page: 'guides' }, // v1.8.0 游记整理（在「我的攻略」下方）
   { to: '/library', label: '城市景点库', ic: 'map', page: 'library' },
   { to: '/weather', label: '天气', ic: 'weather', page: 'weather' },
   { to: '/settings', label: '设置', ic: 'sliders', page: 'settings' },

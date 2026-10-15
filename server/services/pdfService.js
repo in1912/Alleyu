@@ -292,4 +292,206 @@ async function renderGuidePdf(title, markdown) {
   return Buffer.concat(chunks);
 }
 
-module.exports = { renderGuidePdf, findFonts };
+// ==================== v1.8.0 游记 PDF ====================
+// 与攻略 PDF 分开实现（攻略版 12 条 check 依赖，不动它）：差异在
+//  - 莫兰迪配色 5 套（页面底色不再白纸，文字/强调色跟配色走）
+//  - 封面：用户照片 + 标题压图 + 副标题（基础信息一行）
+//  - 两种规格：mode=a4（A4 分页打印用）/ mode=long（纯图不分页、单页长条，网络分享用）
+//    long 用两遍渲染：先在 14400pt（PDF 页高上限）的量高页上排版取最终 y，再按实测高度出真页。
+//  - 正文图片占位 photo:N 由路由换成 {src:Buffer} 传进 extraImages。
+const PALETTES = [
+  { name: '雾灰绿', bg: '#E8E6DF', text: '#3D4038', sub: '#7A8073', acc: '#5A6650' },
+  { name: '豆沙粉', bg: '#EFE6E4', text: '#4A3F3D', sub: '#9A8783', acc: '#A5645C' },
+  { name: '灰蓝', bg: '#E3E8EB', text: '#37424C', sub: '#7C8A96', acc: '#6E8CA0' },
+  { name: '暖沙', bg: '#EDE4D6', text: '#4A4234', sub: '#94886F', acc: '#A98D5F' },
+  { name: '燕麦紫', bg: '#E9E5EC', text: '#3F3A45', sub: '#8B8494', acc: '#8B7F96' },
+];
+
+function paletteOf(n) { return PALETTES[Math.min(PALETTES.length, Math.max(1, Number(n) || 1)) - 1]; }
+
+async function renderJournalPdf({ title, subtitle, markdown, palette = 1, mode = 'a4', coverBuf = null, extraImages = {} }) {
+  const F = findFonts();
+  if (!F) {
+    throw Object.assign(new Error('服务器没有可用的中文字体（只认单文件 .ttf/.otf，.ttc 不支持）。Windows 用系统等线/黑体即可；Docker/Linux 请把任一中文 .ttf/.otf 放到 data/fonts/ 目录或设 ALLEYU_PDF_FONT 环境变量。'), { code: 'NO_FONT' });
+  }
+  const P = paletteOf(palette);
+  const tokens = marked.lexer(cleanForPdf(markdown));
+  const srcs = collectImageSrcs(tokens, []);
+  for (const s of srcs) if (extraImages[s]) continue; // extraImages 优先，其余按外链规则
+  const images = { ...extraImages };
+  for (const [k, v] of Object.entries(await loadImages(srcs))) if (v) images[k] = v;
+
+  const W = A4[0];
+  const M = MARGIN; // 与攻略版同边距
+  const CW = W - M * 2;
+  const LONG_MAX_H = 14400; // PDF 规范页高上限（200in）
+
+  // 布局引擎：跑在给定 doc 上，返回最终 y（量高遍与出真页遍共用，输入相同结果相同）
+  function layout(doc, pageH) {
+    const isLong = mode === 'long';
+    const maxH = isLong ? pageH - M : A4[1] - M;
+    const ensure = (h) => { if (!isLong && doc.y + h > doc.page.maxY() - 8) doc.addPage(); };
+    // 页面底色（long 模式整页一次性铺；a4 模式每页铺）
+    const paintBg = () => doc.rect(0, 0, doc.page.width, doc.page.height).fill(P.bg);
+    paintBg();
+    const onPageAdded = () => paintBg();
+    doc.on('pageAdded', onPageAdded);
+
+    // 封面块：照片（宽满版心、按比例）+ 底部渐变替代=深色半透明条 + 标题/副标题
+    let coverH = 0;
+    if (coverBuf && isPngOrJpg(coverBuf)) {
+      try {
+        const img = doc.openImage(coverBuf);
+        const w = CW, h = Math.min(360, img.height * (w / img.width));
+        doc.image(img, M, M, { width: w, height: h });
+        coverH = h + 6;
+        // 标题压图：图底部一条 accent 半透明带（opacity 0.82）+ 白字
+        const bandH = 46;
+        doc.save().opacity(0.82).rect(M, M + h - bandH, w, bandH).fill(P.acc).restore();
+        doc.fillColor('#ffffff');
+        doc.font(F.bold || F.regular).fontSize(17);
+        doc.text(title || '旅行游记', M + 16, M + h - bandH + 12, { width: w - 32, lineBreak: false });
+      } catch { /* 封面失败继续正文 */ }
+    } else {
+      coverH = 0;
+    }
+    doc.y = M + coverH + 10;
+    if (!coverBuf) {
+      doc.font(F.bold || F.regular).fontSize(20).fillColor(P.acc).text(title || '旅行游记', { width: CW });
+    }
+    doc.font(F.regular).fontSize(10).fillColor(P.sub).text(subtitle || '', { width: CW });
+    doc.moveDown(0.2);
+    doc.moveTo(M, doc.y).lineTo(M + CW, doc.y).lineWidth(1).strokeColor(P.acc).stroke();
+    doc.moveDown(0.55);
+
+    const para = (runs2) => {
+      if (!runs2.length) return;
+      ensure(doc.currentLineHeight() * 2);
+      doc.font(F.regular).fontSize(10.5);
+      for (let i = 0; i < runs2.length; i++) {
+        const rr = runs2[i];
+        doc.font(rr.bold && F.bold ? F.bold : F.regular).fillColor(rr.color || P.text);
+        doc.text(rr.text, { continued: i < runs2.length - 1, width: CW });
+      }
+      doc.moveDown(0.25);
+    };
+    const heading = (tok) => {
+      const size = tok.depth === 1 ? 16 : tok.depth === 2 ? 13 : 11.5;
+      ensure(60);
+      doc.moveDown(0.35);
+      doc.font(F.bold || F.regular).fontSize(size).fillColor(P.acc);
+      doc.text(collectRuns(tok.tokens).map((x) => x.text).join(''), { width: CW });
+      doc.moveDown(0.2);
+    };
+    const image = (src, alt) => {
+      const buf = images[src];
+      if (!isPngOrJpg(buf)) {
+        doc.font(F.regular).fontSize(9).fillColor(P.sub).text(`［${alt || '图片'}未能载入］`, { width: CW });
+        return;
+      }
+      try {
+        const img = doc.openImage(buf);
+        const w = Math.min(CW, img.width);
+        const h = img.height * (w / img.width);
+        const drawH = Math.min(h, 480);
+        const drawW = w * (drawH / h);
+        ensure(drawH + 16);
+        doc.image(img, M + (CW - drawW) / 2, doc.y, { width: drawW, height: drawH });
+        if (alt) {
+          doc.y += drawH + 4;
+          doc.font(F.regular).fontSize(8.5).fillColor(P.sub).text(alt, { width: CW, align: 'center' });
+        } else doc.y += drawH + 10;
+        doc.y += 6;
+      } catch { /* 解码失败当未载入 */ }
+    };
+    const list = (tok, depth) => {
+      for (let i = 0; i < (tok.items || []).length; i++) {
+        const it = tok.items[i];
+        const label = tok.ordered ? `${(tok.start || 1) + i}. ` : '• ';
+        ensure(doc.currentLineHeight() * 2);
+        doc.font(F.regular).fontSize(10.5).fillColor(P.text);
+        doc.text(label + collectRuns(it.tokens).map((x) => x.text).join(''), { width: CW - depth * 14, indent: depth * 14 });
+        for (const t of it.tokens || []) if (t.type === 'list') list(t, depth + 1);
+      }
+      doc.moveDown(0.2);
+    };
+    const blockquote = (tok) => {
+      ensure(doc.currentLineHeight() * 2);
+      doc.font(F.regular).fontSize(10);
+      const y0 = doc.y;
+      doc.x = M + 12;
+      const runs2 = collectRuns(tok.tokens);
+      for (let i = 0; i < runs2.length; i++) {
+        doc.font(runs2[i].bold && F.bold ? F.bold : F.regular).fillColor(runs2[i].color || P.sub);
+        doc.text(runs2[i].text, { continued: i < runs2.length - 1, width: CW - 12 });
+      }
+      const y1 = doc.y;
+      doc.x = M;
+      doc.moveTo(M + 3, y0 - 2).lineTo(M + 3, y1).lineWidth(2.5).strokeColor(P.acc).stroke();
+      doc.moveDown(0.25);
+    };
+    const walk = (ts) => {
+      for (const t of ts) {
+        if (t.type === 'heading') heading(t);
+        else if (t.type === 'paragraph') {
+          const imgs = (t.tokens || []).filter((x) => x.type === 'image');
+          const rest = (t.tokens || []).filter((x) => x.type !== 'image');
+          for (const im of imgs) image(im.href, im.text);
+          if (rest.some((x) => x.type !== 'space')) para(collectRuns(rest));
+        } else if (t.type === 'list') list(t, 0);
+        else if (t.type === 'table') { // 游记少表格：按列表降级渲染，不丢内容
+          const rows = [[...(tok_header(t) || [])], ...(t.rows || [])];
+          const flat = rows.map((cells) => cells.map((c) => collectRuns(c.tokens).map((x) => x.text).join('')).join(' ｜ '));
+          list({ items: flat.map((s) => ({ tokens: [{ type: 'text', text: s }] })) }, 0);
+        } else if (t.type === 'blockquote') blockquote(t);
+        else if (t.type === 'hr') {
+          ensure(20);
+          doc.moveTo(M, doc.y).lineTo(M + CW, doc.y).lineWidth(0.8).strokeColor(P.acc).stroke();
+          doc.moveDown(0.35);
+        } else if (t.type === 'code') {
+          ensure(20 * Math.min((t.text || '').split('\n').length, 20));
+          doc.font(F.regular).fontSize(9).fillColor(P.sub);
+          for (const line of String(t.text || '').split('\n').slice(0, 200)) doc.text(line, { width: CW });
+          doc.moveDown(0.25);
+        }
+      }
+    };
+    walk(tokens);
+    doc.removeListener('pageAdded', onPageAdded);
+    return doc.y;
+  }
+  function tok_header(t) { return t.header; }
+
+  let pageH;
+  if (mode === 'long') {
+    // 第一遍：量高（14400pt 单页，排版同参数；内容万一超上限就只能砍到上限）
+    const m = new PDFDocument({ size: [W, LONG_MAX_H], margin: 0 });
+    const sink = (c) => { /* 丢弃量高遍输出 */ };
+    m.on('data', sink);
+    layout(m, LONG_MAX_H);
+    m.end();
+    pageH = Math.min(LONG_MAX_H, Math.ceil(m.y) + M + 30);
+  } else {
+    pageH = A4[1];
+  }
+
+  const doc = new PDFDocument({ size: mode === 'long' ? [W, pageH] : A4, margin: M, info: { Title: title || '旅行游记', Creator: '游巷 Alleyu' } });
+  const chunks = [];
+  doc.on('data', (c) => chunks.push(c));
+  const finished = new Promise((resolve) => doc.on('end', resolve));
+  layout(doc, pageH);
+
+  if (mode !== 'long') {
+    const range = doc.bufferedPageRange();
+    for (let i = range.start; i < range.start + range.count; i++) {
+      doc.switchToPage(i);
+      doc.font(F.regular).fontSize(8).fillColor(P.sub)
+        .text(`游巷 Alleyu · ${P.name} · 第 ${i + 1} / ${range.start + range.count} 页`, MARGIN, A4[1] - 34, { width: CONTENT_W, align: 'center', lineBreak: false });
+    }
+  }
+  doc.end();
+  await finished;
+  return Buffer.concat(chunks);
+}
+
+module.exports = { renderGuidePdf, findFonts, PALETTES, renderJournalPdf };

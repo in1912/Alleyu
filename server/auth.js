@@ -61,7 +61,7 @@ function cleanupSessions() {
 const PAGES = ['guides', 'library', 'weather', 'settings'];
 
 function pageForPath(p) {
-  if (p.startsWith('/guides') || p.startsWith('/guide') || p.startsWith('/plan') || p.startsWith('/history')) return 'guides';
+  if (p.startsWith('/guides') || p.startsWith('/guide') || p.startsWith('/plan') || p.startsWith('/history') || p.startsWith('/journals') || p.startsWith('/journal')) return 'guides';
   if (p.startsWith('/cities') || p.startsWith('/attractions') || p.startsWith('/library') || p.startsWith('/poi') || p.startsWith('/import-poi')) return 'library';
   if (p.startsWith('/weather')) return 'weather';
   if (p.startsWith('/ai') || p.startsWith('/users') || p.startsWith('/settings')) return 'settings';

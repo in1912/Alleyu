@@ -122,6 +122,45 @@ CREATE TABLE IF NOT EXISTS shares (
   updated_at TEXT DEFAULT (datetime('now','localtime'))
 );
 CREATE INDEX IF NOT EXISTS idx_shares_guide ON shares(guide_id);
+
+-- v1.8.0 游记整理：问答式录入的旅行游记（与攻略并行的另一类内容，同样按 user_id 隔离）。
+-- meta_json=问答答案（出发地/天数/人数/出行方式/当地交通/偏好/总费用/住宿档次/季节，均可空=跳过）；
+-- spots_json=所到景点 [{name,attraction_id,note}]（城市景点库备选 + 用户自输）；
+-- photos 单独一张表（journal_photos），文件落 data/journal_photos/<journal_id>/。
+CREATE TABLE IF NOT EXISTS journals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  city_id INTEGER,
+  destination TEXT NOT NULL DEFAULT '',
+  meta_json TEXT NOT NULL DEFAULT '{}',
+  spots_json TEXT NOT NULL DEFAULT '[]',
+  content TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'draft',
+  error TEXT NOT NULL DEFAULT '',
+  stage TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  subtitle TEXT NOT NULL DEFAULT '',
+  cover_photo_id INTEGER,
+  palette INTEGER NOT NULL DEFAULT 1,
+  merge_guide_id INTEGER,
+  prompt TEXT NOT NULL DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  updated_at TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_journals_user ON journals(user_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS journal_photos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  journal_id INTEGER NOT NULL,
+  spot TEXT NOT NULL DEFAULT '',
+  filename TEXT NOT NULL,
+  caption TEXT NOT NULL DEFAULT '',
+  caption_by TEXT NOT NULL DEFAULT '',
+  sort INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_jphotos_journal ON journal_photos(journal_id);
 `;
 db.exec(DDL);
 

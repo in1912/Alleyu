@@ -607,6 +607,116 @@ try {
   ok(single && single.zoom === 16, '单点 → 顶格 zoom16（最小跨度防失焦）', JSON.stringify(single));
   ok(fitView([]) === null, '空点位 → null（调用方回落）');
 
+  // ---- 游记整理（v1.8.0）：CRUD/照片/配文/生成 SSE/标题封面/PDF/权限 ----
+  console.log('== 游记整理（v1.8.0） ==');
+  r = await req('/api/journals', {
+    method: 'POST', token: u1,
+    body: {
+      destination: '杭州', city_id: null,
+      meta: { origin: '上海', days: '3', people: '2 人', transport: '高铁', local_transport: '地铁公交', prefs: ['人文', '美食'], budget: '约3000元', hotel: '舒适连锁', season: '秋' },
+      spots: [{ name: '西湖', attraction_id: null, note: '' }],
+    },
+  });
+  ok(r.status === 200 && r.j.journal && r.j.journal.status === 'draft', '建游记草稿', JSON.stringify(r.j).slice(0, 200));
+  const jid = r.j.journal.id;
+  r = await req('/api/journals', { token: u1 });
+  ok(r.status === 200 && r.j.journals.some((x) => x.id === jid) && r.j.journals[0].meta, '列表含新游记（meta 已展开）');
+  r = await req(`/api/journals/${jid}`, { method: 'PUT', token: u1, body: { meta: { origin: '上海虹桥', days: '4' }, spots: [{ name: '西湖' }, { name: '灵隐寺' }] } });
+  ok(r.status === 200 && r.j.journal.meta.days === '4' && r.j.journal.spots.length === 2, 'PUT 草稿保存（meta/spots 更新）');
+
+  // 照片：1x1 真 PNG
+  const png1x1 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  r = await req(`/api/journals/${jid}/photos`, { method: 'POST', token: u1, body: { data_url: png1x1, spot: '西湖' } });
+  ok(r.status === 200 && r.j.photo && r.j.photo.sort === 1, '上传 PNG 照片（sort=1）', JSON.stringify(r.j).slice(0, 200));
+  const pid1 = r.j.photo.id;
+  // 声明 png 实为 JPEG 字节 → magic byte 拦下
+  const jpgAsPng = 'data:image/png;base64,' + Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0]).toString('base64');
+  r = await req(`/api/journals/${jid}/photos`, { method: 'POST', token: u1, body: { data_url: jpgAsPng } });
+  ok(r.status === 400, '伪造扩展名照片 400（magic byte 校验）');
+  // 超 8MB → 拒
+  const big = Buffer.alloc(8 * 1024 * 1024 + 16, 7); big[0] = 0x89; big[1] = 0x50; big[2] = 0x4e; big[3] = 0x47;
+  r = await req(`/api/journals/${jid}/photos`, { method: 'POST', token: u1, body: { data_url: 'data:image/png;base64,' + big.toString('base64') } });
+  ok(r.status === 400, '超 8MB 照片 400');
+  // 手写配文 / AI 配文（桩）
+  r = await req(`/api/journals/${jid}/photos/${pid1}`, { method: 'PUT', token: u1, body: { caption: '清晨的湖面' } });
+  ok(r.status === 200 && r.j.photo.caption === '清晨的湖面' && r.j.photo.caption_by === '', '手写配文落库（caption_by 空）');
+  r = await req(`/api/journals/${jid}/photos/${pid1}/caption-ai`, { method: 'POST', token: u1, body: {} });
+  ok(r.status === 200 && r.j.caption && r.j.caption_by === 'ai', 'AI 配文（桩 ~30 字）');
+  r = await req(`/api/journals/${jid}/photos/${pid1}/caption-ai`, { method: 'POST', token: u1, body: { user_text: '风很大，帽子差点飞了' } });
+  ok(r.status === 200 && r.j.caption_by === 'ai' && r.j.caption.length > 0, 'AI 参考用户稿重写配文');
+  // 照片直链：带 token 200 / 不带 401
+  r = await req(`/api/journals/${jid}/photos/${pid1}/file?token=${encodeURIComponent(u1)}`);
+  ok(r.status === 200 && (r.headers.get('content-type') || '').includes('image/png') && r.text.length > 20, '照片直链（query token）');
+  r = await req(`/api/journals/${jid}/photos/${pid1}/file`);
+  ok(r.status === 401, '照片直链不带 token 401');
+
+  // 无 AI 权用户：配文/生成被闸，草稿照常
+  r = await req('/api/users', { method: 'POST', token: admin, body: { username: 'u2', password: 'u123456', display_name: '用户二' } });
+  r = await req('/api/auth/login', { method: 'POST', body: { username: 'u2', password: 'u123456' } });
+  const u2 = r.j.token;
+  r = await req('/api/journals', { method: 'POST', token: u2, body: { destination: '南京' } });
+  const jid2 = r.j.journal.id;
+  r = await req(`/api/journals/${jid2}/photos`, { method: 'POST', token: u2, body: { data_url: png1x1, spot: '' } });
+  ok(r.status === 200, '无 AI 权用户可建草稿传照片');
+  r = await req(`/api/journals/${jid2}/photos/${r.j.photo.id}/caption-ai`, { method: 'POST', token: u2, body: {} });
+  ok(r.status === 403, '无 AI 权配文 403');
+  r = await req(`/api/journals/${jid2}/generate`, { method: 'POST', token: u2, body: {} });
+  ok(r.status === 403 && /权限/.test(r.j.error || ''), '无 AI 权生成 403');
+  r = await req(`/api/journals/${jid}/generate`, { method: 'POST', token: u1, body: { merge_guide_id: 999999 } });
+  ok(r.status === 400, '合并不存在的攻略 400');
+
+  // 生成 → SSE 到 done → 终态断言
+  r = await req(`/api/journals/${jid}/generate`, { method: 'POST', token: u1, body: {} });
+  ok(r.status === 202, '提交生成 202（fire-and-forget）');
+  const jsse = await sseCollect(`/api/journals/${jid}/stream?token=${encodeURIComponent(u1)}`, 8000);
+  ok(jsse.some(([nm]) => nm === 'done'), '游记 SSE 终态 done');
+  const jdone = jsse.find(([nm]) => nm === 'done');
+  const jcontent = jdone ? JSON.parse(jdone[1]).content : '';
+  ok(jcontent.includes('## ') && jcontent.length > 200, 'done 事件带全文（含小节标题）', `len=${jcontent.length}`);
+  r = await req(`/api/journals/${jid}`, { token: u1 });
+  const jd = r.j.journal;
+  ok(jd.status === 'done' && jd.content.includes('photo:1'), '终态 done + 正文含 photo:1 占位（照片进上下文）');
+  ok(jd.title && jd.title.length <= 20, `AI 标题 ≤20 字（「${jd.title}」）`);
+  ok(jd.subtitle.includes('杭州') && jd.subtitle.includes('4'), '副标题带出行基础信息（目的地+天数）');
+  ok(jd.cover_photo_id === pid1, '未手选封面 → 自动随机选一（本例唯一一张）');
+  ok(jd.model === 'stub', '桩模式 model=stub（诚实披露）');
+
+  // 二次编辑 / 标题 / 封面 / 配色
+  r = await req(`/api/journals/${jid}`, { method: 'PUT', token: u1, body: { content: '# 手改版\n\n写完又改了两句。' } });
+  ok(r.status === 200 && r.j.journal.content.startsWith('# 手改版'), '二次编辑正文');
+  r = await req(`/api/journals/${jid}`, { method: 'PUT', token: u1, body: { title: '手写的题' } });
+  ok(r.status === 200 && r.j.journal.title === '手写的题', '手改标题');
+  r = await req(`/api/journals/${jid}/title`, { method: 'POST', token: u1 });
+  ok(r.status === 200 && r.j.title && r.j.title !== '手写的题' && r.j.title.length <= 20, `AI 重起标题（「${r.j.title}」）`);
+  r = await req(`/api/journals/${jid}/cover`, { method: 'PUT', token: u1, body: { photo_id: pid1 } });
+  ok(r.status === 200 && r.j.journal.cover_photo_id === pid1, '手选封面');
+  r = await req(`/api/journals/${jid}`, { method: 'PUT', token: u1, body: { palette: 99 } });
+  ok(r.status === 200 && r.j.journal.palette === 5, '配色越界钳到 5');
+  r = await req(`/api/journals/${jid}`, { method: 'PUT', token: u1, body: { palette: 0 } });
+  ok(r.status === 200 && r.j.journal.palette === 1, '配色 0 钳到 1');
+
+  // 隔离 + PDF
+  r = await req(`/api/journals/${jid}`, { token: admin2 });
+  ok(r.status === 404, '游记按用户隔离（他人 404）');
+  if (fontsAvail) {
+    r = await req(`/api/journals/${jid}/pdf?mode=a4`, { token: u1 });
+    ok(r.status === 200 && r.text.startsWith('%PDF') && r.text.length > 5000, '游记 PDF·A4（%PDF >5KB）');
+    r = await req(`/api/journals/${jid}/pdf?mode=long`, { token: u1 });
+    ok(r.status === 200 && r.text.startsWith('%PDF') && r.text.length > 5000, '游记 PDF·长图（%PDF >5KB）');
+    r = await req(`/api/journals/${jid}/pdf`, { token: admin2 });
+    ok(r.status === 404, '他人导出游记 PDF 404');
+    r = await req(`/api/journals/${jid2}/pdf?mode=a4`, { token: u2 });
+    ok(r.status === 409, '未完成的游记导 PDF 409');
+  } else {
+    console.log('  ⚠️ 无中文字体，游记 PDF 断言跳过');
+  }
+
+  // 删除：照片一并清
+  r = await req(`/api/journals/${jid}`, { method: 'DELETE', token: u1 });
+  ok(r.status === 200, '删除游记');
+  r = await req(`/api/journals/${jid}/photos/${pid1}/file?token=${encodeURIComponent(u1)}`);
+  ok(r.status === 404, '删除后照片直链 404');
+
   // ---- 在线（真实外网） ----
   if (ONLINE) {
     console.log('== 在线真实接口 ==');

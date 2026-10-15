@@ -343,6 +343,134 @@ if (cards > 0) {
   console.log('  ⚠️ 无历史攻略，跳过详情截图');
 }
 
+// ---- v1.8.0 游记整理：侧栏入口 + 向导 UI 全流程 + 详情（封面/配色/编辑/导出） ----
+console.log('== v1.8.0 游记整理 ==');
+// 侧栏入口在「我的攻略」下方
+const jNav = page.locator('.side .nav-item').filter({ hasText: '游记整理' });
+ok((await jNav.count()) === 1, '侧栏「游记整理」入口存在');
+await jNav.click();
+await page.waitForURL('**/#/journals', { timeout: 8000 });
+await page.waitForSelector('.tb', { timeout: 6000 });
+ok(true, '游记列表页渲染');
+const newBtn = page.locator('button').filter({ hasText: '写游记（引导式）' });
+ok((await newBtn.count()) === 1, '列表页「＋写游记」按钮');
+
+// 向导：目的地联想 → 选杭州 → 跳到照片步
+await newBtn.click();
+await page.waitForURL('**/#/journals/new', { timeout: 8000 });
+await page.waitForSelector('.wiz', { timeout: 6000 });
+ok((await page.locator('.steps-bar .st').count()) === 14, '向导 14 步步骤条');
+await page.fill('.q-area input.input', '杭');
+await page.waitForSelector('.dest-hits .chip', { timeout: 6000 });
+await page.locator('.dest-hits .chip').first().click();
+await page.locator('.nav-row button').filter({ hasText: '下一问' }).click(); // 步1存草稿（POST 建）
+await page.waitForTimeout(400);
+// 逐问「跳过」直奔景点步（步 2~10 都可跳）
+for (let i = 0; i < 9; i++) {
+  await page.locator('.nav-row button').filter({ hasText: '跳过' }).click();
+}
+await page.waitForSelector('.q-area .chip-row .chip', { timeout: 6000 });
+const spotChipTxt = await page.locator('.q-area .chip-row .chip').first().innerText();
+ok(spotChipTxt.trim().length > 0, `景点步：城市库备选可见（首选 ${spotChipTxt.trim().slice(0, 10)}）`);
+await page.locator('.q-area .chip-row .chip').first().click();
+ok((await page.locator('.q-area .chip.on').count()) >= 1, '勾选景点高亮');
+await page.locator('.nav-row button').filter({ hasText: '下一问' }).click();
+// 照片步：真上传一张 1x1 PNG + AI 配文（桩）
+await page.waitForSelector('.padd', { timeout: 6000 });
+const tmpPng = path.join(require('node:os').tmpdir(), 'alleyu-render-1x1.png');
+fs.writeFileSync(tmpPng, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'));
+await page.locator('.q-area input[type=file]').first().setInputFiles(tmpPng);
+await page.waitForSelector('.pbox img', { timeout: 8000 });
+ok(true, '照片上传成功渲染');
+await page.screenshot({ path: path.join(IMG_DIR, '游记-向导.png'), fullPage: false });
+await page.locator('.pbtns button').filter({ hasText: 'AI 写' }).click();
+await page.waitForFunction(() => {
+  const ta = document.querySelector('.pcap textarea');
+  return ta && ta.value.trim().length > 0;
+}, null, { timeout: 8000 });
+ok(true, 'AI 配文（桩）填入体验说明');
+await page.locator('.nav-row button').filter({ hasText: '下一问' }).click();
+// 合并步：默认纯旅行记录
+await page.waitForSelector('.radio-row input[type=radio]', { timeout: 6000 });
+const radioCount = await page.locator('.radio-row input[type=radio]').count();
+ok(radioCount >= 1, `合并步：攻略选项渲染（${radioCount} 个）`);
+await page.locator('.nav-row button').filter({ hasText: '下一问' }).click();
+// 生成 → 详情页 SSE 到 done
+await page.locator('.nav-row button').filter({ hasText: '生成游记' }).click();
+await page.waitForURL(/#\/journal\/\d+/, { timeout: 8000 });
+await page.waitForFunction(() => {
+  const t = document.querySelector('.cvr-title');
+  return t && t.textContent.trim().length > 0;
+}, null, { timeout: 20000 });
+ok(true, '生成完成进详情页（封面标题就位）');
+const jTitle = (await page.locator('.cvr-title').innerText()).trim();
+ok(jTitle.length > 0 && jTitle.length <= 20, `AI 标题 ≤20 字（「${jTitle}」）`);
+const jSub = await page.locator('.cvr-sub').innerText();
+ok(jSub.includes('杭州'), '封面副标题含目的地');
+ok((await page.locator('.pal').count()) === 5, '莫兰迪配色 5 套可选');
+await page.locator('.pal').nth(1).click();
+await page.waitForTimeout(400);
+ok((await page.locator('.pal.on').innerText()).includes('豆沙粉'), '切换配色=豆沙粉');
+ok((await page.locator('.thumb.on .cov-badge').count()) === 1, '照片条当前封面有徽标');
+await page.waitForSelector('.jr-md img', { timeout: 8000 });
+ok(true, '正文 photo:N 占位换成真图');
+// 二次编辑
+await page.locator('.jd-head button').filter({ hasText: '编辑' }).click();
+await page.waitForSelector('.editarea', { timeout: 6000 });
+const jMarker = '游记编辑标记RenderE2E';
+await page.locator('.editarea').evaluate((el, m) => { el.value += '\n\n## ' + m + '\n'; el.dispatchEvent(new Event('input', { bubbles: true })); }, jMarker);
+await page.locator('.pb-bar button').filter({ hasText: '保存修改' }).click();
+await page.waitForTimeout(800);
+ok((await page.locator('.jr-md').innerText()).includes(jMarker), '二次编辑保存后正文即时更新');
+await page.screenshot({ path: path.join(IMG_DIR, '游记-详情.png'), fullPage: false });
+// 导出三件：PNG（canvas）+ PDF A4 + PDF 长图
+const pngDlP = page.waitForEvent('download', { timeout: 20000 });
+await page.locator('.jd-head button').filter({ hasText: '导出PNG' }).click();
+const pngDl = await pngDlP;
+ok(pngDl.suggestedFilename().endsWith('.png'), '导出 PNG 长图直接下载（' + pngDl.suggestedFilename() + '）');
+if (FONTS_OK) {
+  const a4DlP = page.waitForEvent('download', { timeout: 25000 });
+  await page.locator('.jd-head button').filter({ hasText: 'PDF·A4打印' }).click();
+  const a4Dl = await a4DlP;
+  ok(a4Dl.suggestedFilename().endsWith('.pdf') && /A4/.test(a4Dl.suggestedFilename()), '导出 PDF·A4（文件名含 A4）');
+  const longDlP = page.waitForEvent('download', { timeout: 25000 });
+  await page.locator('.jd-head button').filter({ hasText: 'PDF·长图分享' }).click();
+  const longDl = await longDlP;
+  ok(longDl.suggestedFilename().endsWith('.pdf') && /长图/.test(longDl.suggestedFilename()), '导出 PDF·长图（文件名含 长图）');
+}
+// 列表回看 + 清理（render 桩服务器共用真实 data/，测完删掉这篇）
+await page.goto(URL_BASE + '/#/journals');
+await page.waitForTimeout(800);
+const jRow = page.locator('.tb td').filter({ hasText: jTitle });
+ok((await jRow.count()) >= 1, '游记列表出现刚生成的一篇');
+await page.screenshot({ path: path.join(IMG_DIR, '游记-列表.png'), fullPage: false });
+const jidM = ((await page.locator('.tb a').first().getAttribute('href')) || '').match(/journal\/(\d+)/);
+if (jidM) {
+  await fetch(URL_BASE + '/api/journals/' + jidM[1], { method: 'DELETE', headers: { Authorization: 'Bearer ' + tk } });
+  console.log('  （已清理 render 生成的游记 #' + jidM[1] + '）');
+}
+
+// ---- v1.8.0 游客模式 + 登录页分栏（匿名 context） ----
+console.log('== v1.8.0 游客模式与登录页 ==');
+const guest = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+const gpage = await guest.newPage();
+await gpage.goto(URL_BASE + '/#/');
+await gpage.waitForSelector('.corner', { timeout: 8000 });
+ok(gpage.url().includes('#/'), '游客进首页不被弹回登录页');
+const cornerTxt = await gpage.locator('.corner').innerText();
+ok(cornerTxt.includes('游客模式'), '右上角游客标识（' + cornerTxt.replace(/\s+/g, ' ').trim() + '）');
+ok((await gpage.locator('.corner button').filter({ hasText: '登录' }).count()) === 1, '右上角登录按钮');
+ok((await gpage.locator('.quick-links').count()) === 0, '游客不见快捷入口（登录后才有）');
+await gpage.locator('.searchbar .journal-go').click();
+await gpage.waitForURL('**/#/login', { timeout: 6000 });
+ok(true, '游客点「写游记」→ 引导登录');
+await gpage.waitForSelector('.split', { timeout: 6000 });
+ok((await gpage.locator('.split .left svg').count()) >= 1, '登录页左 2/3 骑车动画');
+ok((await gpage.locator('.split .left .brand h1').innerText()).includes('游巷'), '登录页左下品牌字');
+ok((await gpage.locator('.split .right .dlg-card').count()) === 1, '登录页右 1/3 登录框');
+await gpage.screenshot({ path: path.join(IMG_DIR, '登录页.png'), fullPage: false });
+await guest.close();
+
 await browser.close();
 if (server) server.kill();
 console.log(`\n渲染自检：${pass} 通过，${fail} 失败`);

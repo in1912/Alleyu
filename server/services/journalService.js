@@ -2,8 +2,13 @@
 // 与 guideService 同一套习惯：AI 走 aiService（全局唯一 Key，未配走桩）、内容写库 +
 // SSE 轮询推增量、阶段写 stage 列、过短自动重试。游记是「事后记录」，攻略是「事前计划」，
 // 提示词风格完全不同——重体验与叙事、轻攻略框架；合并模式才把攻略数据带进来。
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
 const { db } = require('../db');
 const ai = require('./aiService');
+const amap = require('./amapService');
+const { fitView } = require('./mapFit');
 
 // ---------- 副标题（基础信息一行字：目的地·N天·人数·季节·出行方式） ----------
 function buildSubtitle(j) {
@@ -31,7 +36,13 @@ function buildMessages(j, photos, mergeGuide) {
   if (m.budget) lines.push(`总费用：${m.budget}`);
   if (m.hotel) lines.push(`住宿档次：${m.hotel}`);
   if (m.season) lines.push(`季节：${m.season}`);
-  if (spots.length) lines.push(`所到景点：${spots.map((s) => s.name).join('、')}`);
+  if (spots.length) lines.push(`所到景点（按用户排定的顺序，正文分节顺序照此走）：${spots.map((s) => s.name).join('、')}`);
+  // v1.9.0 景点体会：用户在照片步/大纲里逐景点写的一句两句，是正文最鲜活的素材
+  const noted = spots.filter((s) => s.note);
+  if (noted.length) {
+    lines.push('景点体会（用户手写，务必融进对应景点的段落，可改写润色，不要照抄也不要漏）：');
+    for (const s of noted) lines.push(`- ${s.name}：${s.note}`);
+  }
   if (photos.length) {
     lines.push('照片与体验说明（按景点分组，写作时把对应照片的体验自然融进该景点的段落）：');
     for (const p of photos) {
@@ -46,7 +57,7 @@ function buildMessages(j, photos, mergeGuide) {
   const user = `请根据以下素材写一篇完整的旅行游记：\n${lines.join('\n')}\n\n`
     + '结构要求：\n'
     + '1. 开头：一小段引入（为什么出发/总体印象），不要用「## 前言」这种标题，直接写。\n'
-    + '2. 主体：按时间或景点顺序分节，每节用「## 景点名/主题」标题；提到的照片体验自然融入对应段落，配图位置用 Markdown 图片语法 `![体验说明](photo:<照片序号>)` 占位（前端会替换成真实照片）。\n'
+    + '2. 主体：按上面「所到景点」给出的顺序分节，每节用「## 景点名/主题」标题；提到的照片体验与景点体会自然融入对应段落，配图位置用 Markdown 图片语法 `![体验说明](photo:<照片序号>)` 占位（前端会替换成真实照片）。\n'
     + '3. 结尾：一节「## 后记」收束感受，可以给想去的人一两句实在的话。\n'
     + '4. 全文 1200 字以上；门票价格、排队时间这类实用细节如实写（用户素材里有就用，没有不编造）。'
     + (mergeGuide ? '\n5. 实用攻略要点（来自用户的历史攻略）：\n' + mergeGuide.slice(0, 6000) : '');
@@ -180,11 +191,106 @@ async function run(journalId) {
       coverId = photos[Math.floor(Math.random() * photos.length)].id;
       db.prepare('UPDATE journals SET cover_photo_id=? WHERE id=?').run(coverId, journalId);
     }
-    db.prepare("UPDATE journals SET content=?, subtitle=?, status='done', stage='', model=?, updated_at=datetime('now','localtime') WHERE id=?")
-      .run(content, subtitle, cfg && cfg.model || 'stub', journalId);
+    // v1.9.0 三套文本：content=实时版；content_original 只在首次生成时落一次（「恢复原版」的目标），
+    // 之后重新生成不覆盖它——用户点过「重新生成」也不该丢掉系统最初写的那一版。
+    db.prepare(`UPDATE journals SET content=?, subtitle=?, status='done', stage='', model=?,
+      content_original=CASE WHEN content_original='' THEN ? ELSE content_original END,
+      updated_at=datetime('now','localtime') WHERE id=?`)
+      .run(content, subtitle, cfg && cfg.model || 'stub', content, journalId);
   } catch (e) {
     db.prepare("UPDATE journals SET status='error', error=?, stage='', updated_at=datetime('now','localtime') WHERE id=?").run(e.message, journalId);
   }
+}
+
+// ---------- 路线图（「景点顺序 + 坐标 → 连线」，与攻略的景点连线同一套高德接口） ----------
+const MAPIMG_DIR = () => {
+  const dir = path.join(process.env.DATA_DIR || path.join(__dirname, '..', '..', 'data'), 'mapimg');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+};
+// 与 guideService.fetchMapImage 同一套缓存（sha 取静态图 URL，共用 data/mapimg，重复请求零配额）
+async function fetchMapImage(spec) {
+  const buf = await amap.fetchStaticMap(spec);
+  const sha = crypto.createHash('sha1').update(amap.buildStaticMapUrl(spec)).digest('hex').slice(0, 24);
+  const file = path.join(MAPIMG_DIR(), `${sha}.png`);
+  if (!fs.existsSync(file)) fs.writeFileSync(file, buf);
+  return { url: `/api/amap/mapimg/${sha}.png`, file };
+}
+// 折线长度（haversine 逐段累加）：驾车折线≈实际路程，兜底直线就是直线距离——摘要里如实标注
+function lineKm(line) {
+  let m = 0;
+  for (let i = 1; i < line.length; i++) {
+    const [x1, y1] = line[i - 1]; const [x2, y2] = line[i];
+    const r = Math.PI / 180, dLat = (y2 - y1) * r, dLng = (x2 - x1) * r;
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos(y1 * r) * Math.cos(y2 * r) * Math.sin(dLng / 2) ** 2;
+    m += 2 * 6371 * Math.asin(Math.min(1, Math.sqrt(a)));
+  }
+  return Math.round(m * 10) / 10;
+}
+// 逐景点定位：库内 attraction_id → 库内同名 → 高德 POI 现场检索（不写库，避免把错误匹配写进景点库）
+async function locateSpots(j, spots) {
+  const cityRow = j.city_id ? db.prepare('SELECT name, line FROM cities WHERE id=?').get(j.city_id) : null;
+  const cityName = (cityRow && cityRow.name) || j.destination || '';
+  const pts = [];
+  for (const s of spots) {
+    let p = null;
+    if (s.attraction_id) {
+      const a = db.prepare('SELECT name, lng, lat FROM attractions WHERE id=?').get(s.attraction_id);
+      if (a && a.lng != null && a.lat != null) p = { lng: a.lng, lat: a.lat };
+    }
+    if (!p && j.city_id) {
+      const a = db.prepare('SELECT name, lng, lat FROM attractions WHERE city_id=? AND name=?').get(j.city_id, s.name);
+      if (a && a.lng != null && a.lat != null) p = { lng: a.lng, lat: a.lat };
+    }
+    if (!p) {
+      try {
+        const hit = await amap.resolvePoi(s.name, cityName);
+        if (hit && hit.location) p = { lng: hit.location.lng, lat: hit.location.lat };
+      } catch { /* 无 Key / 查不到 → 该点不参与连线，下面如实报出没定位到的名字 */ }
+    }
+    pts.push({ spot: s.name, lng: p ? p.lng : null, lat: p ? p.lat : null });
+  }
+  return { pts, cityRow };
+}
+
+// 路线结果（写进 journals.route_json）：成功含 url/summary，失败也带 reason，前端据此显示原因而不是空着
+async function buildRoute(j) {
+  const spots = j.spots_json ? JSON.parse(j.spots_json) : [];
+  const at = new Date().toLocaleString('zh-CN', { hour12: false });
+  if (spots.length < 2) return { ok: false, reason: '至少要 2 个景点才能连成路线', at };
+  const { pts, cityRow } = await locateSpots(j, spots);
+  if (cityRow && cityRow.line && cityRow.line !== '国内') {
+    return { ok: false, reason: `「${cityRow.line}」是国际线路——高德静态地图没有海外底图，画不了连线`, at };
+  }
+  const located = pts.filter((p) => p.lng != null);
+  const miss = pts.filter((p) => p.lng == null).map((p) => p.spot);
+  if (located.length < 2) {
+    return {
+      ok: false, miss, at,
+      reason: located.length ? '只定位到 1 个景点，连线至少要 2 个有坐标的点' : '没能定位到景点坐标（未配置高德 Key，或这些景点名查不到）',
+    };
+  }
+  const points = located.map((p) => ({ name: p.spot, lng: p.lng, lat: p.lat }));
+  let line = [];
+  let byRoad = false;
+  try { line = await amap.drivingPolyline(points); byRoad = line.length > points.length; } catch { /* 回落直线 */ }
+  if (!line || line.length < 2) line = points.map((p) => [p.lng, p.lat]);
+  const fit = fitView([...points, ...line.map(([lng, lat]) => ({ lng, lat }))]) || { center: points[0], zoom: 11 };
+  let url = '';
+  try {
+    const r = await fetchMapImage({
+      center: fit.center, zoom: fit.zoom, size: '1000*580',
+      markers: points.slice(0, 9).map((p, i) => ({ lng: p.lng, lat: p.lat, label: String(i + 1) })),
+      paths: [amap.downsample(line, 60)],
+    });
+    url = r.url;
+  } catch { /* 出图失败：只留文字摘要，不拦 */ }
+  const km = lineKm(line);
+  const summary = points.map((p, i) => `${i + 1} ${p.name}`).join(' → ')
+    + `　全程约 ${km} km（${byRoad ? '沿道路驾车路径' : '直线连接'}，共 ${points.length} 站）`
+    + (points.length > 9 ? '（连线含全部站点，图上最多标到 9 个序号）' : '')
+    + (miss.length ? `；未定位到：${miss.join('、')}` : '');
+  return { ok: true, url, summary, points: points.map((p) => p.name), km, by_road: byRoad, miss, at };
 }
 
 async function* stubJournalStream(messages) {
@@ -196,4 +302,4 @@ async function* stubJournalStream(messages) {
 }
 
 // 导出 run（fire-and-forget 由路由触发）
-module.exports = { run, buildMessages, buildSubtitle, captionMessages, titleMessages, stubJournalText, stubCaption, stubTitle, aiText };
+module.exports = { run, buildMessages, buildSubtitle, captionMessages, titleMessages, stubJournalText, stubCaption, stubTitle, aiText, buildRoute, lineKm };

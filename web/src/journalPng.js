@@ -99,9 +99,19 @@ export async function renderJournalPng({ title, subtitle, markdown, palette, cov
     } else if (b.type === 'img') {
       const im = b.url ? await loadImg(b.url) : null;
       b.img = im;
-      const iw = Math.min(innerW, 620);
+      // 原比例缩放（v1.9.0 修）：竖版照片按「高不超 560」等比缩窄，绝不为了凑宽 620 而拉伸——
+      // 旧写法 iw 固定 620、ih 单独 min(480) 会把 3:4 竖图压成 620×480（横向拉宽）。
+      const boxW = Math.min(innerW, 620);
+      const boxH = 560;
+      let iw = boxW;
+      let ih = 0;
+      if (im && im.naturalWidth > 0 && im.naturalHeight > 0) {
+        const sc = Math.min(boxW / im.naturalWidth, boxH / im.naturalHeight);
+        iw = Math.max(1, Math.round(im.naturalWidth * sc));
+        ih = Math.max(1, Math.round(im.naturalHeight * sc));
+      }
       b.iw = iw;
-      b.ih = im ? Math.min(480, Math.round(iw * im.naturalHeight / im.naturalWidth)) : 0;
+      b.ih = ih;
       b.capLines = im && b.alt ? wrap(b.alt, capFont, innerW) : [];
       b.h = (im ? b.ih + 10 : 0) + b.capLines.length * 18 + 14;
       if (!im && b.alt) { // 图没了 → 说明文字顶上

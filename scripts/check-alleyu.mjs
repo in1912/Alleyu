@@ -1,7 +1,7 @@
 // 游巷自检：离线桩模式（ALLEYU_AI_STUB=1）跑全链路 API 断言。
 // 用法：node scripts/check-alleyu.mjs [--online]
 //  --online 追加真实外网断言（高德 POI/静态地图、Open-Meteo），消耗少量配额。
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import http from 'node:http';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
@@ -694,6 +694,98 @@ try {
   ok(r.status === 200 && r.j.journal.palette === 5, '配色越界钳到 5');
   r = await req(`/api/journals/${jid}`, { method: 'PUT', token: u1, body: { palette: 0 } });
   ok(r.status === 200 && r.j.journal.palette === 1, '配色 0 钳到 1');
+
+  // ---- v1.9.0：三套文本 / 照片排序 / 景点体会 / 路线图 ----
+  console.log('== 游记 v1.9.0（三套文本 · 排序 · 体会 · 路线） ==');
+  // ① 三套文本：系统自动生成版（首次生成留档）+ 实时版（PUT 即存）+ 手动版（保存一版）
+  r = await req(`/api/journals/${jid}`, { token: u1 });
+  ok(r.j.journal.has_original === true && r.j.journal.original_len > 200, '系统生成版留档（「恢复原版」有料）', `len=${r.j.journal.original_len}`);
+  ok(r.j.journal.content_original === undefined && r.j.journal.content_manual === undefined, '详情不回传两套备份全文（只给有无+字数）');
+  ok(r.j.journal.has_manual === false, '没点过「保存一版」→ has_manual=false（前端置灰）');
+  r = await req(`/api/journals/${jid}`, { method: 'PUT', token: u1, body: { content: '# 实时版\n\n我又改了三句。' } });
+  ok(r.status === 200 && r.j.journal.content.startsWith('# 实时版'), '实时版：编辑即存（自动保存走 PUT content）');
+  r = await req(`/api/journals/${jid}/content/save-version`, { method: 'POST', token: u1, body: { content: '# 实时版\n\n我又改了三句。' } });
+  ok(r.status === 200 && r.j.manual_len > 0, '保存一版 → 手动版单独存一份');
+  r = await req(`/api/journals/${jid}`, { token: u1 });
+  ok(r.j.journal.has_manual === true && r.j.journal.content === '# 实时版\n\n我又改了三句。', '保存一版不动实时版本身');
+  r = await req(`/api/journals/${jid}`, { method: 'PUT', token: u1, body: { content: '# 实时版\n\n又又又改了。' } });
+  r = await req(`/api/journals/${jid}/content/restore`, { method: 'POST', token: u1, body: { which: 'manual' } });
+  ok(r.status === 200 && r.j.content.includes('我又改了三句') && r.j.which === 'manual', '恢复一版 → 回到手动保存的那一份');
+  r = await req(`/api/journals/${jid}`, { token: u1 });
+  ok(r.j.journal.content.includes('我又改了三句'), '恢复后的正文已落库（刷新还在）');
+  r = await req(`/api/journals/${jid}/content/restore`, { method: 'POST', token: u1, body: { which: 'original' } });
+  ok(r.status === 200 && r.j.content.length > 200 && r.j.content.includes('## '), '恢复原版 → 回到系统最初生成的那份', `len=${(r.j.content || '').length}`);
+  r = await req(`/api/journals/${jid}/content/restore`, { method: 'POST', token: u1, body: { which: 'nope' } });
+  ok(r.status === 400, '恢复参数非法 400（which 只认 manual/original）');
+  r = await req(`/api/journals/${jid2}/content/restore`, { method: 'POST', token: u2, body: { which: 'manual' } });
+  ok(r.status === 400 && /保存/.test(r.j.error || ''), '没存过手动版 → 恢复失败但是人话 400');
+  r = await req(`/api/journals/${jid2}/content/save-version`, { method: 'POST', token: u2, body: { content: '   ' } });
+  ok(r.status === 400, '全空正文不许存一版');
+  r = await req(`/api/journals/${jid}/content/save-version`, { method: 'POST', token: u1, body: {} });
+  ok(r.status === 200 && r.j.manual_len > 200, '不带 content 则用库内实时版存一版（覆盖旧手动版）');
+
+  // ② 照片排序：ids 必须恰好不重不漏，排完按新顺序重编 1..N（= photo:N 编号）
+  r = await req(`/api/journals/${jid}/photos`, { method: 'POST', token: u1, body: { data_url: png1x1, spot: '灵隐寺' } });
+  const pid2 = r.j.photo.id;
+  ok(r.status === 200 && r.j.photo.sort === 2, '第二张照片 sort=2', JSON.stringify(r.j).slice(0, 160));
+  r = await req(`/api/journals/${jid}/photos/order`, { method: 'PUT', token: u1, body: {} });
+  ok(r.status === 400, '排序缺 ids 400');
+  r = await req(`/api/journals/${jid}/photos/order`, { method: 'PUT', token: u1, body: { ids: [pid2] } });
+  ok(r.status === 400, '排序漏传照片 400（防丢图）');
+  r = await req(`/api/journals/${jid}/photos/order`, { method: 'PUT', token: u1, body: { ids: [pid1, pid1] } });
+  ok(r.status === 400, '排序重复 id 400');
+  r = await req(`/api/journals/${jid}/photos/order`, { method: 'PUT', token: u1, body: { ids: [pid1, 999999] } });
+  ok(r.status === 400, '排序含不存在/他人照片 400');
+  r = await req(`/api/journals/${jid}/photos/order`, { method: 'PUT', token: u1, body: { ids: [pid2, pid1] } });
+  ok(r.status === 200 && r.j.photos[0].id === pid2 && r.j.photos[0].sort === 1 && r.j.photos[1].sort === 2,
+    '换序后按新顺序重编 1..N（前台 photo:N 跟着变）', JSON.stringify(r.j.photos));
+  r = await req(`/api/journals/${jid2}/photos/order`, { method: 'PUT', token: u2, body: { ids: [pid1, pid2] } });
+  ok(r.status === 400, '排序不能跨篇（他人照片 id 进自己篇 400）');
+
+  // ③ 景点体会：落库 + 进提示词（buildMessages 是纯函数，但 require 它会连带打开库——
+  //    所以另起子进程把 DATA_DIR 指到临时目录跑，绝不碰真实 data/）
+  r = await req(`/api/journals/${jid}`, { method: 'PUT', token: u1, body: { spots: [{ name: '西湖', note: '断桥边坐了一小时，柳絮吹了满脸' }, { name: '灵隐寺', note: '' }] } });
+  ok(r.status === 200 && r.j.journal.spots[0].note.startsWith('断桥边'), '景点体会（note）落库并回传');
+  r = await req(`/api/journals/${jid}`, { method: 'PUT', token: u1, body: { spots: [{ name: '西湖', note: 'x'.repeat(900) }] } });
+  ok(r.j.journal.spots[0].note.length === 500, '体会超长截断到 500 字');
+  const probeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'alleyu-prompt-'));
+  let jsPrompt = '';
+  try {
+    jsPrompt = execFileSync(process.execPath, ['-e', `
+      const js = require(${JSON.stringify(path.join(ROOT, 'server', 'services', 'journalService.js'))});
+      const m = js.buildMessages({ destination: '杭州', meta_json: '{}', spots_json: JSON.stringify([
+        { name: '西湖', note: '断桥边坐了一小时，柳絮吹了满脸' }, { name: '灵隐寺' }]) }, [], '');
+      process.stdout.write(m.find((x) => x.role === 'user').content);
+    `], { env: { ...process.env, DATA_DIR: probeDir, ALLEYU_WIKI_OFFLINE: '1' }, encoding: 'utf8' });
+  } catch (e) {
+    jsPrompt = '';
+    console.log('  ⚠️ 提示词探针子进程失败：' + e.message);
+  }
+  fs.rmSync(probeDir, { recursive: true, force: true });
+  ok(jsPrompt.includes('景点体会') && jsPrompt.includes('断桥边坐了一小时'), '景点体会进提示词（AI 融合素材）');
+  ok(jsPrompt.includes('所到景点（按用户排定的顺序'), '景点顺序按用户排定喂给 AI（大纲顺序 = 正文分节顺序）');
+
+  // ④ 路线连线：≥2 个有坐标的点才画；无 Key 时如实回原因而不是 500
+  r = await req(`/api/journals/${jid}`, { method: 'PUT', token: u1, body: { spots: [{ name: '西湖' }, { name: '灵隐寺' }] } });
+  r = await req(`/api/journals/${jid}/route`, { method: 'POST', token: u1 });
+  if (amapReady) {
+    ok(r.status === 200 && r.j.ok === true && r.j.url && /→/.test(r.j.summary || ''), '路线图：高德连线出图 + 文字摘要', JSON.stringify(r.j).slice(0, 240));
+  } else {
+    ok(r.status === 200 && r.j.ok === false && /高德 Key/.test(r.j.reason || ''), '无 Key：路线接口如实回原因（不 500）', JSON.stringify(r.j).slice(0, 200));
+  }
+  r = await req(`/api/journals/${jid}`, { token: u1 });
+  ok(r.j.journal.route && r.j.journal.route.at && r.j.journal.route.ok === amapReady, '路线结果（含失败原因）缓存进 route_json——开页面不重打高德');
+  r = await req(`/api/journals/${jid}`, { method: 'PUT', token: u1, body: { spots: [{ name: '西湖' }] } });
+  r = await req(`/api/journals/${jid}/route`, { method: 'POST', token: u1 });
+  ok(r.status === 200 && r.j.ok === false && /至少要 2 个景点/.test(r.j.reason || ''), '单景点不硬连线（如实说至少要 2 个）');
+  r = await req('/api/cities', { method: 'POST', token: admin, body: { name: '测试海外城', province: '', line: '测试海外线' } });
+  ok(r.status === 200 && r.j.city && r.j.city.line === '测试海外线', '建国际线路测试城市（线路不做白名单）');
+  const intlCity = r.j.city.id;
+  r = await req('/api/journals', { method: 'POST', token: u1, body: { destination: '测试海外城', city_id: intlCity, spots: [{ name: '甲' }, { name: '乙' }] } });
+  const jid3 = r.j.journal.id;
+  r = await req(`/api/journals/${jid3}/route`, { method: 'POST', token: u1 });
+  ok(r.status === 200 && r.j.ok === false && /国际线路/.test(r.j.reason || ''), '国际线路：不画连线并说清原因（高德无海外底图）', JSON.stringify(r.j).slice(0, 200));
+  r = await req('/api/cities/' + intlCity, { method: 'DELETE', token: admin });
 
   // 隔离 + PDF
   r = await req(`/api/journals/${jid}`, { token: admin2 });

@@ -22,7 +22,17 @@ function photoOf(journalId, pid) {
 function rowJson(j) {
   if (!j) return null;
   const photos = db.prepare('SELECT id, spot, caption, caption_by, sort, created_at FROM journal_photos WHERE journal_id=? ORDER BY sort, id').all(j.id);
-  return { ...j, meta: JSON.parse(j.meta_json || '{}'), spots: JSON.parse(j.spots_json || '[]'), photos };
+  // v1.9.0 三套文本：原版/手动版正文不回传给前端（长度可能几十 KB），只给「有没有 + 多少字」，
+  // 要恢复走 /content/restore，恢复后的正文由那个接口回。route 是路线图缓存（可能为 null）。
+  const out = { ...j, meta: JSON.parse(j.meta_json || '{}'), spots: JSON.parse(j.spots_json || '[]'), photos };
+  out.has_original = !!(j.content_original || '').trim();
+  out.has_manual = !!(j.content_manual || '').trim();
+  out.original_len = (j.content_original || '').length;
+  out.manual_len = (j.content_manual || '').length;
+  try { out.route = j.route_json ? JSON.parse(j.route_json) : null; } catch { out.route = null; }
+  delete out.content_original;
+  delete out.content_manual;
+  return out;
 }
 function touch(id) {
   db.prepare("UPDATE journals SET updated_at=datetime('now','localtime') WHERE id=?").run(id);
@@ -38,7 +48,14 @@ function needAi(req, res) {
 // ---- 列表 / 详情 ----
 r.get('/', (req, res) => {
   const rows = db.prepare('SELECT * FROM journals WHERE user_id=? ORDER BY id DESC').all(req.user.id);
-  res.json({ journals: rows.map((x) => ({ ...x, meta: JSON.parse(x.meta_json || '{}'), spots: JSON.parse(x.spots_json || '[]') })) });
+  res.json({
+    journals: rows.map((x) => {
+      const y = { ...x, meta: JSON.parse(x.meta_json || '{}'), spots: JSON.parse(x.spots_json || '[]') };
+      delete y.content_original; // 列表页用不到两套备份正文（详情接口也只给长度不给全文）
+      delete y.content_manual;
+      return y;
+    }),
+  });
 });
 
 r.post('/', (req, res) => {
@@ -122,6 +139,24 @@ r.get('/:id/photos/:pid/file', (req, res) => {
   res.setHeader('Content-Type', type);
   res.setHeader('Cache-Control', 'private, max-age=86400');
   fs.createReadStream(file).pipe(res);
+});
+
+// 照片整体排序（v1.9.0：向导里拖图/拖景点/上下按钮都调它）。sort 即正文里的 photo:N 编号，
+// 所以重排是「按新顺序重编 1..N」——必须恰好不重不漏地包含本篇全部照片，防前端漏传。
+r.put('/:id/photos/order', (req, res) => {
+  const j = myJournal(req, req.params.id);
+  if (!j) return res.status(404).json({ error: '游记不存在' });
+  const raw = (req.body || {}).ids;
+  if (!Array.isArray(raw)) return res.status(400).json({ error: 'ids 必须是数组' });
+  const ids = raw.map(Number).filter(Number.isFinite);
+  const mine = db.prepare('SELECT id FROM journal_photos WHERE journal_id=?').all(j.id).map((x) => x.id);
+  if (ids.length !== mine.length || new Set(ids).size !== ids.length || ids.some((x) => !mine.includes(x))) {
+    return res.status(400).json({ error: '排序列表必须恰好包含本篇全部照片 id（不重不漏）' });
+  }
+  const upd = db.prepare('UPDATE journal_photos SET sort=? WHERE id=?');
+  ids.forEach((pid, i) => upd.run(i + 1, pid));
+  touch(j.id);
+  res.json({ ok: true, photos: db.prepare('SELECT id, spot, caption, caption_by, sort FROM journal_photos WHERE journal_id=? ORDER BY sort, id').all(j.id) });
 });
 
 // 手写/保存配文
@@ -267,6 +302,49 @@ r.put('/:id/cover', (req, res) => {
   res.json({ journal: rowJson(myJournal(req, j.id)) });
 });
 
+// ---- v1.9.0 三套文本 ----
+// 自动保存走的是 PUT /:id（写 content=实时版）；这里只管另外两套备份的存与恢复。
+// 「保存一版」= 把当前实时版拷成手动版；恢复一版/原版 = 把备份拷回实时版（覆盖当前正文，前端有确认）。
+r.post('/:id/content/save-version', (req, res) => {
+  const j = myJournal(req, req.params.id);
+  if (!j) return res.status(404).json({ error: '游记不存在' });
+  const b = req.body || {};
+  const text = String(b.content !== undefined ? b.content : j.content).slice(0, 200000);
+  if (!text.trim()) return res.status(400).json({ error: '正文是空的，没有可保存的版本' });
+  db.prepare("UPDATE journals SET content=?, content_manual=?, updated_at=datetime('now','localtime') WHERE id=?").run(text, text, j.id);
+  res.json({ ok: true, content: text, manual_len: text.length });
+});
+
+r.post('/:id/content/restore', (req, res) => {
+  const j = myJournal(req, req.params.id);
+  if (!j) return res.status(404).json({ error: '游记不存在' });
+  const which = String((req.body || {}).which || '');
+  if (which !== 'manual' && which !== 'original') {
+    return res.status(400).json({ error: 'which 只能是 manual（手动保存版）或 original（系统生成版）' });
+  }
+  const text = which === 'manual' ? j.content_manual : j.content_original;
+  if (!String(text || '').trim()) {
+    return res.status(400).json({ error: which === 'manual' ? '还没有手动保存过的版本（先点「保存一版」）' : '还没有系统生成版（这篇没走 AI 生成）' });
+  }
+  db.prepare("UPDATE journals SET content=?, updated_at=datetime('now','localtime') WHERE id=?").run(text, j.id);
+  res.json({ ok: true, content: text, which });
+});
+
+// ---- v1.9.0 景点连线路线图 ----
+// 点位顺序=spots_json 顺序（大纲/照片步排定的），坐标取景点库；库里没有就现场高德检索。
+// 结果（含失败原因）缓存进 route_json——前端不用每次开页面都重打高德。
+r.post('/:id/route', async (req, res) => {
+  const j = myJournal(req, req.params.id);
+  if (!j) return res.status(404).json({ error: '游记不存在' });
+  try {
+    const out = await js.buildRoute(j);
+    db.prepare("UPDATE journals SET route_json=?, updated_at=datetime('now','localtime') WHERE id=?").run(JSON.stringify(out), j.id);
+    res.json(out);
+  } catch (e) {
+    res.status(502).json({ error: '路线生成失败：' + e.message });
+  }
+});
+
 // ---- PDF 导出：mode=a4（分页打印）/ long（纯图不分页单页长条，网络分享） ----
 // 正文里的 ![alt](photo:N) 占位换成本地文件 Buffer；封面=cover_photo_id 指的照片。
 r.get('/:id/pdf', async (req, res) => {
@@ -316,7 +394,7 @@ function sanitizeSpots(raw) {
   return raw.slice(0, 60).map((s) => ({
     name: String((s && s.name) || '').trim().slice(0, 40),
     attraction_id: s && s.attraction_id ? Number(s.attraction_id) : null,
-    note: String((s && s.note) || '').slice(0, 100),
+    note: String((s && s.note) || '').slice(0, 500), // v1.9.0 景点体会（写进提示词的素材），放宽到 500 字
   })).filter((s) => s.name);
 }
 

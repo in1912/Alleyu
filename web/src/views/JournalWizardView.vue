@@ -61,30 +61,59 @@
           <span v-for="t in ['春', '夏', '秋', '冬']" :key="t" class="chip" :class="{ on: form.meta.season === t }" @click="form.meta.season = t">{{ t }}季</span>
         </div>
 
-        <!-- 所到景点：城市景点库备选 + 自输新增 -->
+        <!-- 所到景点：城市景点库备选 + 边录边搜 + 搜不到再按文本添加 -->
         <template v-else-if="step === 10">
-          <p v-if="!form.city_id" class="hint">没有选目的地城市：只能手动输入景点名（选了城市会有库内景点备选）。</p>
+          <p v-if="!form.city_id" class="hint">没有选目的地城市：下面输入时也会边录边搜（全库范围），搜不到的按你写的加。</p>
           <div v-if="form.city_id && spotOptions.length" class="chip-row" style="margin-bottom: 10px">
             <span v-for="a in spotOptions" :key="a.id" class="chip" :class="{ on: !!form.spots.find((s) => s.attraction_id === a.id) }" @click="toggleSpot(a)">{{ a.name }}<small v-if="a.must"> ★</small></span>
           </div>
-          <div style="display: flex; gap: 8px; max-width: 380px">
-            <input v-model="spotInput" class="input" placeholder="库里没有的景点，输入名字回车添加" @keydown.enter.prevent="addSpotInput" />
-            <button class="btn sm ghost" @click="addSpotInput">添加</button>
+          <div class="spot-add">
+            <input v-model="spotInput" class="input" placeholder="边录边搜：输入景点名，底下实时给库内建议" @input="spotTyping" @focus="spotTyping" @keydown.enter.prevent="addSpotInput" @blur="hideHitsLater" />
+            <button class="btn sm ghost" @click="addSpotInput">＋ 按我写的加</button>
+            <div v-if="spotHits.length" class="sug-inline">
+              <div v-for="a in spotHits" :key="a.id" class="s" @mousedown.prevent="pickSpotHit(a)">
+                <span>{{ a.name }}</span>
+                <small>{{ a.city || '' }}<span v-if="a.must"> ★</span><span v-if="a.level"> {{ a.level }}</span></small>
+              </div>
+            </div>
           </div>
-          <div v-if="form.spots.length" class="chip-row" style="margin-top: 10px">
-            <span v-for="(s, i) in form.spots" :key="i" class="chip on" @click="form.spots.splice(i, 1)">{{ s.name }} ✕</span>
-          </div>
+          <p v-if="spotInput.trim() && !spotHits.length" class="hint" style="margin-top: 6px">库里没有搜到——回车或点「按我写的加」，就用你输入的名字。</p>
+          <ol v-if="form.spots.length" class="spot-list">
+            <li v-for="(s, i) in form.spots" :key="s.name">
+              <span class="sl-idx">{{ i + 1 }}</span>
+              <b>{{ s.name }}</b>
+              <span class="hint">{{ s.attraction_id ? '库内景点' : '手动录入' }}</span>
+              <button class="xbtn" title="从列表移除" @click="form.spots.splice(i, 1)">✕</button>
+            </li>
+          </ol>
         </template>
 
         <!-- 照片与体验说明 -->
         <template v-else-if="step === 11">
-          <p class="hint">给去过的景点配照片（≤8MB/张，PNG/JPG/WEBP）。每张可写体验说明，或让 AI 写一句（~30 字，可重写；你先写几个字，AI 会参考你的话再润色，不限字数）。</p>
+          <p class="hint">
+            给去过的景点配照片（≤8MB/张，PNG/JPG/WEBP）。景点可<strong>按住标题拖动</strong>换顺序，也可用 ↑↓ 微调（这里每张照片的编号 photo:N 会跟着变）。<br />
+            每张可写体验说明或让 AI 写一句；每个景点标题下的「体会」框随手记几句，AI 生成时会融进那一段。
+          </p>
           <div class="photo-groups">
-            <div v-for="g in photoGroups" :key="g.name" class="pgroup">
-              <b>{{ g.name || '（未分景点）' }}</b>
+            <div v-for="(g, gi) in photoGroups" :key="g.key" class="pgroup">
+              <div class="pg-head" :class="{ draggable: g.si >= 0 }" :draggable="g.si >= 0"
+                   @dragstart="dragGroup = gi" @dragover.prevent @drop.prevent="dropGroup(gi)" @dragend="dragGroup = null">
+                <span v-if="g.si >= 0" class="pg-grip" title="按住拖动调整景点顺序">⋮⋮</span>
+                <b>{{ g.name || '（未分景点）' }}</b>
+                <span v-if="g.si >= 0" class="pg-move">
+                  <button class="btn-plain" :disabled="g.si === 0" title="上移" @click="moveSpot(g.si, -1)">↑</button>
+                  <button class="btn-plain" :disabled="g.si === form.spots.length - 1" title="下移" @click="moveSpot(g.si, 1)">↓</button>
+                </span>
+                <span class="hint" v-if="g.photos.length">{{ g.photos.length }} 张</span>
+              </div>
+              <input v-if="g.si >= 0" class="input note-in" :value="spotNote(g.name)" placeholder="这个景点的体会（写几句心里话，AI 会融进这段）" @input="setSpotNote(g.name, $event.target.value)" @change="saveDraft" />
               <div class="prow">
-                <div v-for="p in g.photos" :key="p.id" class="pbox">
-                  <img :src="withToken('/api/journals/' + journalId + '/photos/' + p.id + '/file')" />
+                <div v-for="(p, pi) in g.photos" :key="p.id" class="pbox" draggable="true" title="按住拖动可换图片顺序"
+                     @dragstart="dragPhoto = { g: gi, i: pi }" @dragover.prevent @drop.prevent.stop="dropPhoto(gi, pi)" @dragend="dragPhoto = null">
+                  <span class="pimg">
+                    <img :src="withToken('/api/journals/' + journalId + '/photos/' + p.id + '/file')" />
+                    <span class="pnum">(photo:{{ p.sort }})</span>
+                  </span>
                   <div class="pcap">
                     <textarea v-model="p.caption" rows="2" placeholder="体验说明（可留空让 AI 写）" @change="saveCaption(p)"></textarea>
                     <div class="pbtns">
@@ -101,6 +130,11 @@
                 </label>
               </div>
             </div>
+          </div>
+          <div class="pg-add">
+            <input v-model="newSpotName" class="input" placeholder="插入新景点：输入名称，回车" @keydown.enter.prevent="addSpotInline" />
+            <button class="btn ghost sm" @click="addSpotInline">＋ 插入景点</button>
+            <span class="hint">新景点会带一个自己的「加照片」入口</span>
           </div>
         </template>
 
@@ -166,23 +200,29 @@ const destQ = ref('');
 const destHits = ref([]);
 const spotOptions = ref([]);
 const spotInput = ref('');
+const spotHits = ref([]);
+const newSpotName = ref('');
 const photos = ref([]);
 const myGuides = ref([]);
 const mergeGuideId = ref('');
+const dragGroup = ref(null);
+const dragPhoto = ref(null);
 let destTimer = 0;
+let spotTimer = 0;
 
+// 分组顺序 = form.spots 顺序（si = 在 form.spots 里的下标，-1 表示这组不对应任何景点：
+// 未分景点的照片、或景点被移除后遗留的照片组）。key 用名字而非下标，拖动时才不会整组重建 DOM。
 const photoGroups = computed(() => {
   const groups = [];
-  // 未归景点的照片（或一个景点都没选时）单列一组，保证总有传图入口
   const orphan = photos.value.filter((p) => !p.spot);
-  if (orphan.length || !form.value.spots.length) groups.push({ name: '', photos: orphan });
-  for (const s of form.value.spots) {
-    groups.push({ name: s.name, photos: photos.value.filter((p) => p.spot === s.name) });
-  }
+  if (orphan.length || !form.value.spots.length) groups.push({ key: 'none', name: '', si: -1, photos: orphan });
+  form.value.spots.forEach((s, si) => {
+    groups.push({ key: 's:' + s.name, name: s.name, si, photos: photos.value.filter((p) => p.spot === s.name) });
+  });
   // 照片归的景点后来被取消勾选了——照片还在，保留那组（不丢内容）
   const known = new Set(form.value.spots.map((s) => s.name));
   for (const n of [...new Set(photos.value.filter((p) => p.spot && !known.has(p.spot)).map((p) => p.spot))]) {
-    groups.push({ name: n, photos: photos.value.filter((p) => p.spot === n) });
+    groups.push({ key: 'x:' + n, name: n, si: -1, photos: photos.value.filter((p) => p.spot === n) });
   }
   return groups;
 });
@@ -233,6 +273,98 @@ function addSpotInput() {
   if (!name) return;
   if (!form.value.spots.some((s) => s.name === name)) form.value.spots.push({ name, attraction_id: null, note: '' });
   spotInput.value = '';
+  spotHits.value = [];
+}
+// 边录边搜（v1.9.0 需求 8）：输入即查景点库，点建议=带 attraction_id 入库；搜不到就按文本添加
+function spotTyping() {
+  clearTimeout(spotTimer);
+  spotTimer = setTimeout(async () => {
+    const kw = spotInput.value.trim();
+    if (!kw) { spotHits.value = []; return; }
+    try {
+      const q = '/attractions?q=' + encodeURIComponent(kw) + (form.value.city_id ? '&city_id=' + form.value.city_id : '') + '&page_size=8';
+      const j = await api(q);
+      spotHits.value = (j.attractions || []).filter((a) => !form.value.spots.some((s) => s.name === a.name));
+    } catch { spotHits.value = []; }
+  }, 180);
+}
+function pickSpotHit(a) {
+  if (!form.value.spots.some((s) => s.name === a.name)) {
+    form.value.spots.push({ name: a.name, attraction_id: a.id, note: '' });
+  }
+  spotInput.value = '';
+  spotHits.value = [];
+}
+function hideHitsLater() {
+  setTimeout(() => { spotHits.value = []; }, 150); // 留出 mousedown 的时间
+}
+
+// ---- 景点排序（照片步）：拖动 / ↑↓ 都改 form.spots 顺序，照片编号跟着重排 ----
+function moveSpot(si, d) {
+  const t = si + d;
+  if (t < 0 || t >= form.value.spots.length) return;
+  const [s] = form.value.spots.splice(si, 1);
+  form.value.spots.splice(t, 0, s);
+  afterSpotOrder();
+}
+function dropGroup(gi) {
+  const src = dragGroup.value;
+  dragGroup.value = null;
+  if (src === null || src === gi) return;
+  const a = photoGroups.value[src], b = photoGroups.value[gi];
+  if (!a || !b || a.si < 0 || b.si < 0) return;
+  const from = a.si, to = b.si;
+  const [s] = form.value.spots.splice(from, 1);
+  form.value.spots.splice(from < to ? to - 1 : to, 0, s);
+  afterSpotOrder();
+}
+function addSpotInline() {
+  const n = newSpotName.value.trim();
+  if (!n) return;
+  newSpotName.value = '';
+  if (form.value.spots.some((s) => s.name === n)) return;
+  form.value.spots.push({ name: n, attraction_id: null, note: '' });
+  afterSpotOrder();
+}
+function afterSpotOrder() {
+  applyPhotoOrder(photoGroups.value.flatMap((g) => g.photos.map((p) => p.id)));
+  saveDraft();
+}
+function spotNote(name) {
+  const s = form.value.spots.find((x) => x.name === name);
+  return s ? (s.note || '') : '';
+}
+function setSpotNote(name, v) {
+  const s = form.value.spots.find((x) => x.name === name);
+  if (s) s.note = String(v).slice(0, 500);
+}
+
+// ---- 照片排序：本地顺序 + 服务端 sort（= 正文 photo:N 的编号）一起改 ----
+async function applyPhotoOrder(ids) {
+  const byId = new Map(photos.value.map((p) => [p.id, p]));
+  const next = ids.map((x) => byId.get(x)).filter(Boolean);
+  if (next.length !== photos.value.length) return; // 顺序表不完整就不动，宁可不排也不丢图
+  photos.value = next;
+  await syncPhotoOrder();
+}
+async function syncPhotoOrder() {
+  if (!journalId.value || !photos.value.length) return;
+  const ids = photos.value.map((p) => p.id);
+  try {
+    await api(`/journals/${journalId.value}/photos/order`, { method: 'PUT', body: { ids } });
+    ids.forEach((id, i) => { const p = photos.value.find((x) => x.id === id); if (p) p.sort = i + 1; });
+  } catch (e) { saveState.value = '照片排序保存失败：' + e.message; }
+}
+function dropPhoto(gi, pi) {
+  const src = dragPhoto.value;
+  dragPhoto.value = null;
+  if (!src) return;
+  const gs = photoGroups.value.map((g) => g.photos.map((p) => p.id));
+  if (!gs[src.g] || !gs[gi]) return;
+  const [id] = gs[src.g].splice(src.i, 1);
+  const t = (src.g === gi && src.i < pi) ? pi - 1 : pi; // 同组内往后放：目标下标左移一位
+  gs[gi].splice(Math.max(0, t), 0, id);
+  applyPhotoOrder(gs.flat());
 }
 
 // ---- 照片 ----
@@ -249,6 +381,7 @@ async function uploadPhotos(ev, spotName) {
       photos.value.push({ ...j.photo, aiBusy: false });
     } catch (e) { alert('上传失败：' + e.message); }
   }
+  await syncPhotoOrder(); // 服务端按 MAX(sort)+1 编号，跟屏幕上的分组顺序可能不一致——传完统一重编
 }
 function readAsDataURL(file) {
   return new Promise((resolve, reject) => {
@@ -337,6 +470,7 @@ onMounted(async () => {
       form.value = { city_id: d.city_id, destination: d.destination, meta: { origin: '', days: '', people: '', transport: '', local_transport: '', prefs: [], budget: '', hotel: '', season: '', ...(d.meta || {}) }, spots: d.spots || [] };
       photos.value = (d.photos || []).map((p) => ({ ...p, aiBusy: false }));
       destQ.value = d.destination;
+      mergeGuideId.value = d.merge_guide_id || ''; // v1.9.0「回引导修改」回来时不丢原来选的合并攻略
       if (d.city_id) loadSpots();
     } catch { /* 载入失败就当新写 */ }
   }
@@ -367,4 +501,40 @@ onMounted(async () => {
 .pbtns { display: flex; gap: 6px; margin-top: 5px; flex-wrap: wrap; }
 .padd { width: 120px; height: 150px; border: 1.5px dashed var(--line); border-radius: 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--mut); font-size: 13px; }
 .padd:hover { border-color: var(--acc-d); color: var(--acc-d); }
+/* 景点步：边录边搜 */
+.spot-add { position: relative; display: flex; gap: 8px; max-width: 520px; }
+.spot-add .input { flex: 1; }
+.sug-inline {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 90px; z-index: 30;
+  background: #fff; border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+  box-shadow: 0 8px 24px rgba(60, 80, 60, 0.15);
+}
+.sug-inline .s { padding: 7px 14px; cursor: pointer; display: flex; justify-content: space-between; font-size: 13.5px; }
+.sug-inline .s:hover { background: var(--acc-l); }
+.sug-inline .s small { color: var(--mut); }
+.spot-list { margin: 12px 0 0; padding: 0 0 0 4px; list-style: none; display: flex; flex-direction: column; gap: 5px; max-width: 520px; }
+.spot-list li { display: flex; align-items: center; gap: 7px; font-size: 13.5px; }
+.spot-list .sl-idx { width: 20px; height: 20px; border-radius: 50%; background: var(--card2); color: var(--mut); font-size: 11.5px; display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.xbtn { border: none; background: none; color: var(--mut); cursor: pointer; font-size: 12px; padding: 0 2px; margin-left: auto; }
+.xbtn:hover { color: var(--err, #c0504d); }
+/* 照片步：景点分组拖动 / 无色上下按钮 / 体会输入 / 图片编号 */
+.pgroup { border-top: 1px solid var(--line); padding-top: 10px; }
+.pg-head { display: flex; align-items: center; gap: 8px; }
+.pg-head.draggable { cursor: grab; user-select: none; }
+.pg-head.draggable:active { cursor: grabbing; }
+.pg-grip { color: var(--mut); letter-spacing: -2px; font-size: 13px; }
+.pg-move { display: inline-flex; gap: 4px; }
+.btn-plain {
+  border: 1px solid var(--line); background: transparent; color: var(--mut);
+  border-radius: 6px; font-size: 12px; line-height: 1; padding: 3px 7px; cursor: pointer;
+}
+.btn-plain:hover:not(:disabled) { border-color: var(--mut); color: var(--text); }
+.btn-plain:disabled { opacity: 0.4; cursor: not-allowed; }
+.note-in { max-width: 460px; margin-top: 6px; font-size: 13px; }
+.pimg { position: relative; display: block; border-radius: 8px; overflow: hidden; }
+.pnum { position: absolute; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.62); color: #fff; font-size: 11px; padding: 1px 7px; border-radius: 8px 0 0 0; letter-spacing: 0.4px; }
+.pbox { position: relative; cursor: grab; }
+.pbox:active { cursor: grabbing; }
+.pg-add { display: flex; gap: 8px; align-items: center; margin-top: 16px; border-top: 1px dashed var(--line); padding-top: 14px; }
+.pg-add .input { max-width: 280px; }
 </style>

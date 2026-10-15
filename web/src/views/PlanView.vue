@@ -83,9 +83,15 @@
               {{ a.name }}<small v-if="a.must"> ★</small>
             </span>
           </div>
-          <div style="display: flex; gap: 8px; margin-top: 10px">
-            <input v-model="newPoi" class="input" placeholder="单独录入景点名，回车添加" @keydown.enter.prevent="addPoi" />
+          <div class="poi-add">
+            <input v-model="newPoi" class="input" placeholder="边录边搜：输入即查景点库；都没有就按你写的加（回车）" @input="poiTyping" @focus="poiTyping" @blur="hidePoiHits" @keydown.enter.prevent="addPoi" />
             <button class="btn ghost sm" @click="addPoi">添加</button>
+            <div v-if="poiSugs.length" class="sug">
+              <div v-for="a in poiSugs" :key="a.id" class="s" @mousedown.prevent="pickPoi(a)">
+                <span>{{ a.name }}</span>
+                <small>{{ a.city }}<span v-if="a.must"> ★</span><span v-if="a.level"> {{ a.level }}</span></small>
+              </div>
+            </div>
           </div>
           <div v-if="form.mustVisits.length" class="hint" style="margin-top: 8px">已选：{{ form.mustVisits.join('、') }}</div>
         </div>
@@ -147,11 +153,13 @@ const citySugs = ref([]);
 const sugFor = ref('');
 const attractions = ref([]);
 const newPoi = ref('');
+const poiSugs = ref([]);
 const avoidCustom = ref('');
 const busy = ref(false);
 const err = ref('');
 const aiStatus = ref(null);
 let sugTimer = 0;
+let poiTimer = 0;
 
 function toggle(arr, v) {
   const i = arr.indexOf(v);
@@ -189,6 +197,28 @@ function addPoi() {
   const v = newPoi.value.trim();
   if (v && !form.mustVisits.includes(v)) form.mustVisits.push(v);
   newPoi.value = '';
+  poiSugs.value = [];
+}
+// 边录边搜（v1.9.0）：输入即查景点库（已选目的地就限该城市），点建议=用库里的规范名；
+// 搜不到再回车按用户写的文本加——不阻断自输。
+function poiTyping() {
+  clearTimeout(poiTimer);
+  poiTimer = setTimeout(async () => {
+    const kw = newPoi.value.trim();
+    if (!kw) { poiSugs.value = []; return; }
+    try {
+      const j = await api('/attractions?q=' + encodeURIComponent(kw) + (form.cityId ? '&city_id=' + form.cityId : '') + '&page_size=8');
+      poiSugs.value = (j.attractions || []).filter((a) => !form.mustVisits.includes(a.name));
+    } catch { poiSugs.value = []; }
+  }, 180);
+}
+function pickPoi(a) {
+  if (!form.mustVisits.includes(a.name)) form.mustVisits.push(a.name);
+  newPoi.value = '';
+  poiSugs.value = [];
+}
+function hidePoiHits() {
+  setTimeout(() => { poiSugs.value = []; }, 150);
 }
 function addAvoid() {
   const v = avoidCustom.value.trim();
@@ -232,6 +262,9 @@ onMounted(async () => {
 .sug .s { padding: 8px 16px; cursor: pointer; display: flex; justify-content: space-between; font-size: 14px; }
 .sug .s:hover { background: var(--acc-l); }
 .sug .s small { color: var(--mut); }
+.poi-add { position: relative; display: flex; gap: 8px; margin-top: 10px; max-width: 560px; }
+.poi-add .input { flex: 1; }
+.poi-add .sug { right: 74px; } /* 给右边「添加」按钮让位，否则建议被按钮压住 */
 .poi-pool { display: flex; flex-wrap: wrap; gap: 6px; }
 .poi-pool .opt {
   padding: 5px 12px; border-radius: 999px; border: 1px solid var(--line);

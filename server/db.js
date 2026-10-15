@@ -184,6 +184,14 @@ addCol('attractions', 'intro_source', "TEXT NOT NULL DEFAULT ''");
 addCol('attractions', 'intro_url', "TEXT NOT NULL DEFAULT ''");
 addCol('attractions', 'address', "TEXT NOT NULL DEFAULT ''");
 addCol('attractions', 'rating', "TEXT NOT NULL DEFAULT ''");
+// v1.9.0 游记三套文本 + 路线图：
+//  content       = 实时版（编辑时自动保存的那份，永远是当前正文）
+//  content_original = 系统自动生成版（首次生成完成时写入一次，之后不被覆盖，供「恢复原版」）
+//  content_manual   = 手动版（点「保存一版」时把实时版拷进来，供「恢复一版」）
+//  route_json    = 景点连线路线图缓存 {ok,url,summary,points,km,by_road,reason,at}
+addCol('journals', 'content_original', "TEXT NOT NULL DEFAULT ''");
+addCol('journals', 'content_manual', "TEXT NOT NULL DEFAULT ''");
+addCol('journals', 'route_json', "TEXT NOT NULL DEFAULT ''");
 
 // ---------- settings 读写 ----------
 function getSetting(key) {

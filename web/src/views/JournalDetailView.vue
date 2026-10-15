@@ -4,10 +4,12 @@
       <h2 style="margin: 0">📖 {{ j?.title || j?.destination || '游记' }}</h2>
       <div style="display: flex; gap: 8px; flex-wrap: wrap">
         <button v-if="status === 'done'" class="btn ghost sm" @click="startEdit">编辑</button>
-        <button v-if="status === 'done'" class="btn ghost sm" :disabled="pngBusy" @click="exportPng">{{ pngBusy ? '渲染中…' : '导出PNG' }}</button>
+        <button v-if="status === 'done'" class="btn ghost sm" @click="exportPng" :disabled="pngBusy">{{ pngBusy ? '渲染中…' : '导出PNG' }}</button>
         <button v-if="status === 'done'" class="btn ghost sm" :disabled="pdfBusy" @click="exportPdf('a4')">{{ pdfBusy ? '生成中…' : 'PDF·A4打印' }}</button>
         <button v-if="status === 'done'" class="btn ghost sm" :disabled="pdfBusy" @click="exportPdf('long')">PDF·长图分享</button>
-        <button v-if="status === 'error' || status === 'done'" class="btn ghost sm" @click="regen">重新生成</button>
+        <!-- v1.9.0：成稿后的右上角不再是「原地重跑 AI」，而是回引导模式改答案再走一遍 -->
+        <button v-if="status === 'done'" class="btn ghost sm" title="回问答向导：填好的内容都留着，改完再走一遍生成" @click="backToWizard">✏️ 回引导修改</button>
+        <button v-if="status === 'error'" class="btn ghost sm" @click="regen">重新生成</button>
         <a href="#/journals" class="btn ghost sm">返回列表</a>
         <button class="btn danger sm" @click="del">删除</button>
       </div>
@@ -25,7 +27,7 @@
     </div>
     <div v-else-if="status === 'error'" class="card">
       <p class="err-text" style="font-size: 14px">❌ {{ j?.error }}</p>
-      <p class="hint">可以点「重新生成」原参数重跑。</p>
+      <p class="hint">可以点「重新生成」原参数重跑，或点「回引导修改」改完再生成。</p>
     </div>
     <div v-else-if="status === 'draft' && !j?.content" class="card">
       <p>这篇游记还没生成正文。</p>
@@ -35,65 +37,122 @@
       </div>
     </div>
 
-    <!-- 成稿：封面 + 配色 + 正文 -->
+    <!-- 成稿：左侧大纲（景点排序）+ 右侧封面/路线/正文 -->
     <template v-if="(status === 'done' || (status === 'draft' && j?.content))">
-      <div class="card">
-        <!-- 封面：照片压标题（AI 短标题）+ 副标题（出行基础信息） -->
-        <div class="jcover" :class="{ noimg: !coverPhoto }" :style="!coverPhoto ? { background: pal.bg } : {}">
-          <img v-if="coverPhoto" :src="coverUrl" alt="封面" />
-          <div class="scrim"></div>
-          <div class="cvr-text">
-            <div class="cvr-bar" :style="{ background: coverPhoto ? '#fff' : pal.acc }"></div>
-            <div v-if="!titleEditing" class="cvr-title" :class="{ dark: !coverPhoto }" :title="'点击修改标题'">{{ j?.title || '（未起标题）' }}</div>
-            <div v-else class="cvr-edit">
-              <input v-model="titleText" class="input" maxlength="40" @keyup.enter="saveTitle" />
-              <button class="btn sm" @click="saveTitle">存</button>
-              <button class="btn ghost sm" @click="titleEditing = false">取消</button>
+      <div class="jd-wrap">
+        <aside class="jd-out card">
+          <div class="out-head">
+            <b>🧭 景点大纲</b>
+            <span class="hint">{{ spots.length }} 个</span>
+          </div>
+          <ol v-if="spots.length" class="out-list">
+            <li v-for="(s, i) in spots" :key="s.name" class="out-item" :class="{ dragging: dragIdx === i }"
+                draggable="true" @dragstart="dragIdx = i" @dragover.prevent @drop.prevent="dropOn(i)" @dragend="dragIdx = null">
+              <span class="out-grip" title="按住拖动调整顺序">⋮⋮</span>
+              <span class="out-idx">{{ i + 1 }}</span>
+              <span class="out-name" :title="s.note || ''">{{ s.name }}</span>
+              <button class="xbtn" title="从大纲移除" @click="removeSpot(i)">✕</button>
+            </li>
+          </ol>
+          <p v-else class="hint">还没有景点，下面加一个；顺序就是路线连线的顺序。</p>
+          <div class="out-add">
+            <input v-model="newSpot" class="input" placeholder="新增景点名，回车" @keydown.enter.prevent="addSpot" />
+            <button class="btn ghost sm" :disabled="!newSpot.trim()" @click="addSpot">加</button>
+          </div>
+          <p class="hint out-tip">拖动 = 改顺序；顺序同时决定路线连线的走向，也重排生成时喂给 AI 的景点顺序。</p>
+        </aside>
+
+        <div class="jd-main">
+          <div class="card">
+            <!-- 封面：照片压标题（AI 短标题）+ 副标题（出行基础信息） -->
+            <div class="jcover" :class="{ noimg: !coverPhoto }" :style="!coverPhoto ? { background: pal.bg } : {}">
+              <img v-if="coverPhoto" :src="coverUrl" alt="封面" />
+              <div class="scrim"></div>
+              <div class="cvr-text">
+                <div class="cvr-bar" :style="{ background: coverPhoto ? '#fff' : pal.acc }"></div>
+                <div v-if="!titleEditing" class="cvr-title" :class="{ dark: !coverPhoto }" :title="'点击修改标题'">{{ j?.title || '（未起标题）' }}</div>
+                <div v-else class="cvr-edit">
+                  <input v-model="titleText" class="input" maxlength="40" @keyup.enter="saveTitle" />
+                  <button class="btn sm" @click="saveTitle">存</button>
+                  <button class="btn ghost sm" @click="titleEditing = false">取消</button>
+                </div>
+                <div class="cvr-sub" :class="{ dark: !coverPhoto }">{{ j?.subtitle || subFallback }}</div>
+              </div>
+              <div class="cvr-btns">
+                <button class="btn ghost sm" :disabled="titleBusy" @click="aiTitle" :title="'AI 参考 目的地/偏好/季节 重新起一个 ≤20 字标题（现有标题会被覆盖）'">{{ titleBusy ? '起标题中…' : '✨ AI 标题' }}</button>
+                <button v-if="titleEditing === false" class="btn ghost sm" @click="titleEditing = true; titleText = j?.title || ''">✏️ 改标题</button>
+              </div>
             </div>
-            <div class="cvr-sub" :class="{ dark: !coverPhoto }">{{ j?.subtitle || subFallback }}</div>
-          </div>
-          <div class="cvr-btns">
-            <button class="btn ghost sm" :disabled="titleBusy" @click="aiTitle" :title="'AI 参考 目的地/偏好/季节 重新起一个 ≤20 字标题（现有标题会被覆盖）'">{{ titleBusy ? '起标题中…' : '✨ AI 标题' }}</button>
-            <button v-if="titleEditing === false" class="btn ghost sm" @click="titleEditing = true; titleText = j?.title || ''">✏️ 改标题</button>
-          </div>
-        </div>
 
-        <!-- 配色：莫兰迪 5 套（PNG/PDF 同步用它） -->
-        <div class="pal-row">
-          <span class="hint">配色：</span>
-          <span v-for="(p, i) in PALETTES" :key="i" class="pal" :class="{ on: j?.palette === i + 1 }" @click="setPalette(i + 1)">
-            <i :style="{ background: p.bg, borderColor: p.acc }"></i>{{ p.name }}
-          </span>
-        </div>
+            <!-- 配色：莫兰迪 5 套（PNG/PDF 同步用它） -->
+            <div class="pal-row">
+              <span class="hint">配色：</span>
+              <span v-for="(p, i) in PALETTES" :key="i" class="pal" :class="{ on: j?.palette === i + 1 }" @click="setPalette(i + 1)">
+                <i :style="{ background: p.bg, borderColor: p.acc }"></i>{{ p.name }}
+              </span>
+            </div>
 
-        <!-- 照片条：点选设封面 -->
-        <div v-if="photos.length" class="strip">
-          <div v-for="p in photos" :key="p.id" class="thumb" :class="{ on: j?.cover_photo_id === p.id }" @click="setCover(p)" :title="p.id === j?.cover_photo_id ? '当前封面' : '点我设为封面'">
-            <img :src="withToken('/api/journals/' + id + '/photos/' + p.id + '/file')" alt="" />
-            <span v-if="p.caption" class="tcap">{{ p.caption }}</span>
-            <span v-if="j?.cover_photo_id === p.id" class="cov-badge">封面</span>
+            <!-- 照片：默认折叠，展开后右下角标出正文里的占位编号 (photo:N) -->
+            <div v-if="photos.length" class="strip-wrap">
+              <button class="btn ghost sm" @click="showPhotos = !showPhotos">{{ showPhotos ? '收起照片' : `展开照片（${photos.length} 张）` }}</button>
+              <span class="hint">右下角的 <code>(photo:N)</code> 就是正文里的图片占位编号；点开可设为封面。</span>
+              <div v-if="showPhotos" class="strip">
+                <div v-for="p in photos" :key="p.id" class="thumb" :class="{ on: j?.cover_photo_id === p.id }" @click="setCover(p)" :title="p.id === j?.cover_photo_id ? '当前封面' : '点我设为封面'">
+                  <div class="tw">
+                    <img :src="withToken('/api/journals/' + id + '/photos/' + p.id + '/file')" alt="" />
+                    <span v-if="j?.cover_photo_id === p.id" class="cov-badge">封面</span>
+                    <span class="pnum">(photo:{{ p.sort }})</span>
+                  </div>
+                  <span v-if="p.caption" class="tcap">{{ p.caption }}</span>
+                </div>
+                <span class="hint" style="align-self: center">未手选封面时，生成完随机选一张。</span>
+              </div>
+            </div>
           </div>
-          <span class="hint" style="align-self: center">点击照片设为封面；未手选时生成完随机选一张。</span>
+
+          <!-- 景点连线路线图（顺序=大纲顺序，坐标取自景点库/高德） -->
+          <div v-if="routeCard" class="card route-card">
+            <div class="route-head">
+              <b>🗺️ 景点路线</b>
+              <span class="hint" v-if="j?.route?.at">{{ j.route.at }}</span>
+              <span style="flex: 1"></span>
+              <button class="btn ghost sm" :disabled="routeBusy" @click="postRoute(true)">{{ routeBusy ? '生成中…' : '重新生成路线' }}</button>
+            </div>
+            <img v-if="j?.route?.url" class="route-img" :src="j.route.url" alt="景点路线图" />
+            <p v-if="j?.route?.summary" class="route-sum">{{ j.route.summary }}</p>
+            <p v-else-if="j?.route?.reason" class="hint">没画出连线：{{ j.route.reason }}</p>
+          </div>
+
+          <!-- 编辑模式：自动保存实时版；「保存一版」存手动版，可恢复手动版/系统原版 -->
+          <div v-if="editing" class="card">
+            <div class="pb-bar">
+              <span class="hint">编辑游记 Markdown 原文（图片占位 <code>![说明](photo:序号)</code> 保留即可，导出时自动换回真图）。改动会自动存成当前正文。</span>
+              <div class="pb-btns">
+                <span class="hint" v-if="saveHint">{{ saveHint }}</span>
+                <button class="btn ghost sm" :disabled="busyRestore || !j?.has_manual"
+                        :title="j?.has_manual ? '回到上次点「保存一版」时的那一份' : '还没手动保存过，先点「保存一版」'"
+                        @click="restoreVersion('manual')">恢复一版</button>
+                <button class="btn ghost sm" :disabled="busyRestore || !j?.has_original"
+                        title="回到系统 AI 最初生成的那一版"
+                        @click="restoreVersion('original')">恢复原版</button>
+                <button class="btn ghost sm" @click="closeEdit">取消</button>
+                <button class="btn sm" :disabled="savingVer" @click="saveVersion">{{ savingVer ? '保存中…' : '保存一版' }}</button>
+              </div>
+            </div>
+            <textarea v-model="editText" class="editarea" spellcheck="false" @input="onEditInput"></textarea>
+            <p class="hint ver-line">
+              同一篇存三套：<b>实时版</b>（正在编辑，自动保存）· <b>手动版</b>{{ j?.has_manual ? `（${j.manual_len} 字，可「恢复一版」）` : '（还没存过）' }} ·
+              <b>系统原版</b>{{ j?.has_original ? `（${j.original_len} 字，可「恢复原版」）` : '（无）' }}
+            </p>
+          </div>
+          <div v-else class="card jr-md" v-html="html"></div>
+
+          <details v-if="j?.prompt" class="card promptbox">
+            <summary>📋 本次生成的完整提示词（默认折叠）</summary>
+            <pre>{{ j.prompt }}</pre>
+          </details>
         </div>
       </div>
-
-      <!-- 编辑模式 -->
-      <div v-if="editing" class="card">
-        <div class="pb-bar">
-          <span class="hint">编辑游记 Markdown 原文（图片占位 <code>![说明](photo:序号)</code> 保留即可，导出时自动换回真图）</span>
-          <div style="display: flex; gap: 8px">
-            <button class="btn ghost sm" @click="editing = false">取消</button>
-            <button class="btn sm" @click="saveEdit">保存修改</button>
-          </div>
-        </div>
-        <textarea v-model="editText" class="editarea" spellcheck="false"></textarea>
-      </div>
-      <div v-else class="card jr-md" v-html="html"></div>
-
-      <details v-if="j?.prompt" class="card promptbox">
-        <summary>📋 本次生成的完整提示词（默认折叠）</summary>
-        <pre>{{ j.prompt }}</pre>
-      </details>
     </template>
   </div>
 </template>
@@ -121,11 +180,20 @@ const pdfBusy = ref(false);
 const titleEditing = ref(false);
 const titleText = ref('');
 const titleBusy = ref(false);
+const showPhotos = ref(false);          // v1.9.0 需求 5：封面下的照片默认折叠
+const newSpot = ref('');
+const dragIdx = ref(null);
+const routeBusy = ref(false);
+const saveHint = ref('');
+const savingVer = ref(false);
+const busyRestore = ref(false);
 let es = null;
+let autoTimer = 0;
 
 marked.setOptions({ breaks: true, gfm: true });
 
 const pal = computed(() => PALETTES[((j.value?.palette || 1) - 1 + PALETTES.length) % PALETTES.length]);
+const spots = computed(() => j.value?.spots || []);
 const coverPhoto = computed(() => {
   if (!photos.value.length) return null;
   return photos.value.find((p) => p.id === j.value?.cover_photo_id) || photos.value[0];
@@ -133,6 +201,8 @@ const coverPhoto = computed(() => {
 const coverUrl = computed(() => (coverPhoto.value ? withToken('/api/journals/' + id + '/photos/' + coverPhoto.value.id + '/file') : ''));
 const subFallback = computed(() => j.value?.destination || '');
 const peek = computed(() => (streamed.value ? streamed.value.slice(-220) : ''));
+// 只有景点 ≥2 才值得摆路线卡（1 个点连不成线，0 个点更没得说）
+const routeCard = computed(() => !!j.value?.route && spots.value.length >= 2);
 
 // 正文：clean 后把 ![alt](photo:N) 占位换成真图 URL（N=照片 sort 值，与服务端 PDF 同一套约定）
 const html = computed(() => {
@@ -179,6 +249,7 @@ async function load() {
     status.value = r.journal.status;
     photos.value = r.journal.photos || [];
     if (r.journal.status === 'done' && r.journal.content) streamed.value = r.journal.content;
+    if (r.journal.status === 'done') maybeRoute();
   } catch (e) {
     status.value = 'error';
     j.value = { error: e.message };
@@ -214,7 +285,64 @@ async function setPalette(n) {
   } catch (e) { alert(e.message); }
 }
 
+// ---- 大纲：景点顺序（拖动 / 新增 / 移除），顺序同时决定路线连线与喂给 AI 的景点顺序 ----
+async function persistSpots(next) {
+  try {
+    const r = await api('/journals/' + id, { method: 'PUT', body: { spots: next } });
+    j.value = r.journal;
+    if (j.value.route) await postRoute(true); // 顺序变了，路线重画
+  } catch (e) { alert('保存景点失败：' + e.message); }
+}
+function dropOn(i) {
+  const src = dragIdx.value;
+  dragIdx.value = null;
+  if (src === null || src === i) return;
+  const next = spots.value.slice();
+  const [s] = next.splice(src, 1);
+  next.splice(src < i ? i - 1 : i, 0, s);
+  persistSpots(next);
+}
+function addSpot() {
+  const n = newSpot.value.trim();
+  if (!n) return;
+  newSpot.value = '';
+  if (spots.value.some((s) => s.name === n)) return;
+  persistSpots([...spots.value, { name: n, attraction_id: null, note: '' }]);
+}
+function removeSpot(i) {
+  if (!confirm(`从大纲移除「${spots.value[i]?.name}」？照片与正文不动，只影响大纲与路线。`)) return;
+  const next = spots.value.slice();
+  next.splice(i, 1);
+  persistSpots(next);
+}
+
+// ---- 路线图：进页面若还没有结果就自动算一次；改顺序/手动点 = 强制重算 ----
+async function maybeRoute() {
+  if (j.value?.route || routeBusy.value) return;
+  if ((j.value?.spots || []).length < 2) return;
+  postRoute(false);
+}
+async function postRoute(force) {
+  if (routeBusy.value) return;
+  if (!force && j.value?.route) return;
+  routeBusy.value = true;
+  try {
+    const out = await api('/journals/' + id + '/route', { method: 'POST' });
+    j.value = { ...j.value, route: out };
+  } catch { /* 路线是加分项：失败静默，卡片位置靠 route 有无决定 */ } finally { routeBusy.value = false; }
+}
+
 // ---- 生成 / 编辑 ----
+async function backToWizard() {
+  if (j.value?.has_manual) {
+    const ok = confirm('回引导模式改答案再生成：新生成会覆盖当前正文（已「保存一版」的手动版和系统原版都留着，可以恢复）。继续？');
+    if (!ok) return;
+  } else {
+    const ok = confirm('回引导模式改答案再生成：新生成会覆盖当前正文。想留一份就先「编辑 → 保存一版」。继续？');
+    if (!ok) return;
+  }
+  location.hash = '#/journals/new?draft=' + id;
+}
 async function generateNow() {
   try {
     await api('/journals/' + id + '/generate', { method: 'POST', body: {} });
@@ -225,7 +353,6 @@ async function generateNow() {
   } catch (e) { alert(e.message); }
 }
 async function regen() {
-  if (status.value === 'done' && !confirm('重新生成会覆盖当前正文与副标题（标题、封面、配色保留），确定？')) return;
   try {
     await api('/journals/' + id + '/regenerate', { method: 'POST' });
     status.value = 'pending';
@@ -237,16 +364,50 @@ async function regen() {
 }
 function startEdit() {
   editText.value = j.value?.content || '';
+  saveHint.value = '';
   editing.value = true;
 }
-async function saveEdit() {
-  if (!editText.value.trim()) { alert('正文不能清空（要重来请用「重新生成」）'); return; }
+function closeEdit() {
+  clearTimeout(autoTimer); // 最后一次输入若还没落库，取消编辑前先补一次
+  if (editText.value !== (j.value?.content || '')) pushLive();
+  editing.value = false;
+}
+// 自动保存实时版（防抖 1.2s）：编辑框里改的就是当前正文，页面刷新/关掉都不丢
+function onEditInput() {
+  saveHint.value = '正在自动保存…';
+  clearTimeout(autoTimer);
+  autoTimer = setTimeout(pushLive, 1200);
+}
+async function pushLive() {
   try {
     await api('/journals/' + id, { method: 'PUT', body: { content: editText.value } });
     streamed.value = editText.value;
     j.value = { ...j.value, content: editText.value };
-    editing.value = false;
-  } catch (e) { alert(e.message); }
+    saveHint.value = '已自动保存 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  } catch (e) { saveHint.value = '自动保存失败：' + e.message; }
+}
+async function saveVersion() {
+  savingVer.value = true;
+  clearTimeout(autoTimer);
+  try {
+    const r = await api('/journals/' + id + '/content/save-version', { method: 'POST', body: { content: editText.value } });
+    streamed.value = r.content;
+    j.value = { ...j.value, content: r.content, has_manual: true, manual_len: r.manual_len };
+    saveHint.value = '已保存一版（' + r.manual_len + ' 字）';
+  } catch (e) { alert('保存一版失败：' + e.message); } finally { savingVer.value = false; }
+}
+async function restoreVersion(which) {
+  const label = which === 'manual' ? '手动保存版' : '系统生成版';
+  if (!confirm(`恢复${label}会覆盖当前正文（想反悔可以先「保存一版」），确定？`)) return;
+  busyRestore.value = true;
+  clearTimeout(autoTimer);
+  try {
+    const r = await api('/journals/' + id + '/content/restore', { method: 'POST', body: { which } });
+    editText.value = r.content;
+    streamed.value = r.content;
+    j.value = { ...j.value, content: r.content };
+    saveHint.value = '已恢复' + label;
+  } catch (e) { alert('恢复失败：' + e.message); } finally { busyRestore.value = false; }
 }
 async function del() {
   if (!confirm('删除这篇游记？照片一并删除，不可恢复。')) return;
@@ -287,11 +448,14 @@ onMounted(async () => {
   await load();
   if (status.value === 'pending') connect();
 });
-onBeforeUnmount(() => { if (es) es.close(); });
+onBeforeUnmount(() => {
+  if (es) es.close();
+  clearTimeout(autoTimer);
+});
 </script>
 
 <style scoped>
-.jd { max-width: 880px; margin: 0 auto; }
+.jd { max-width: 1180px; margin: 0 auto; }
 .jd-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
 .status-card { text-align: center; padding: 30px 20px; }
 .spin { font-size: 40px; animation: hop 0.9s ease-in-out infinite; }
@@ -301,6 +465,30 @@ onBeforeUnmount(() => { if (es) es.close(); });
 .genbar .fill { height: 100%; background: linear-gradient(90deg, var(--acc-d), color-mix(in srgb, var(--acc-d) 60%, #fff)); }
 .peek { max-width: 520px; margin: 12px auto 0; text-align: left; white-space: pre-wrap; word-break: break-all; font-size: 12px; color: var(--mut); background: var(--card2); border-radius: 8px; padding: 8px 10px; max-height: 3.6em; overflow: hidden; }
 .peek.dim { opacity: 0.5; }
+
+/* 两栏：左大纲 + 右正文 */
+.jd-wrap { display: flex; gap: 16px; align-items: flex-start; }
+.jd-out { width: 220px; flex: none; position: sticky; top: 14px; }
+.out-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+.out-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.out-item { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 8px; font-size: 13px; cursor: grab; }
+.out-item:hover { background: var(--card2); }
+.out-item:hover .xbtn { opacity: 1; }
+.out-item.dragging { opacity: 0.45; }
+.out-item:active { cursor: grabbing; }
+.out-grip { color: var(--mut); letter-spacing: -2px; font-size: 12px; }
+.out-idx { width: 18px; height: 18px; border-radius: 50%; background: var(--card2); color: var(--mut); font-size: 11px; display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.out-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.out-add { display: flex; gap: 6px; margin-top: 10px; }
+.out-add .input { flex: 1; min-width: 0; font-size: 13px; }
+.out-tip { margin-top: 8px; line-height: 1.5; }
+.xbtn { border: none; background: none; color: var(--mut); cursor: pointer; font-size: 12px; padding: 0 2px; opacity: 0; flex: none; }
+.jd-main { flex: 1; min-width: 0; }
+@media (max-width: 900px) {
+  .jd-wrap { flex-direction: column; }
+  .jd-out { width: 100%; position: static; }
+}
+
 .jcover { position: relative; border-radius: 12px; overflow: hidden; aspect-ratio: 21 / 9; min-height: 180px; }
 .jcover img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .jcover .scrim { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0,0,0,0.05) 30%, rgba(0,0,0,0.6) 100%); }
@@ -318,14 +506,23 @@ onBeforeUnmount(() => { if (es) es.close(); });
 .pal { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 14px; border: 1.5px solid transparent; cursor: pointer; font-size: 12.5px; color: var(--mut); }
 .pal i { width: 16px; height: 16px; border-radius: 50%; border: 2px solid transparent; display: inline-block; }
 .pal.on { border-color: var(--acc-d); color: var(--text); background: var(--card2); }
-.strip { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+.strip-wrap { margin-top: 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.strip { display: flex; gap: 10px; flex-wrap: wrap; width: 100%; }
 .thumb { position: relative; width: 108px; cursor: pointer; border-radius: 8px; overflow: hidden; border: 2px solid transparent; }
 .thumb.on { border-color: var(--acc-d); }
+.tw { position: relative; }
 .thumb img { width: 108px; height: 76px; object-fit: cover; display: block; }
+.pnum { position: absolute; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.62); color: #fff; font-size: 10.5px; padding: 1px 6px; border-radius: 8px 0 0 0; letter-spacing: 0.3px; }
 .tcap { display: block; font-size: 11px; color: var(--mut); padding: 4px 5px; background: var(--card2); max-height: 3em; overflow: hidden; }
 .cov-badge { position: absolute; top: 5px; left: 5px; background: var(--acc-d); color: #fff; font-size: 10.5px; padding: 1px 7px; border-radius: 9px; }
-.pb-bar { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.route-card { margin-top: 14px; }
+.route-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.route-img { width: 100%; border-radius: 10px; display: block; }
+.route-sum { margin: 10px 0 0; font-size: 13.5px; color: var(--text); line-height: 1.7; }
+.pb-bar { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.pb-btns { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .editarea { width: 100%; min-height: 420px; box-sizing: border-box; font-family: Consolas, monospace; font-size: 13px; line-height: 1.7; }
+.ver-line { margin-top: 8px; line-height: 1.7; }
 .jr-md :deep(img) { max-width: 100%; border-radius: 10px; margin: 8px 0; }
 .jr-md :deep(h2) { border-bottom: 1px solid var(--line); padding-bottom: 6px; }
 .promptbox { margin-top: 14px; }

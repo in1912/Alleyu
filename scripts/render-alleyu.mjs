@@ -374,14 +374,37 @@ const spotChipTxt = await page.locator('.q-area .chip-row .chip').first().innerT
 ok(spotChipTxt.trim().length > 0, `景点步：城市库备选可见（首选 ${spotChipTxt.trim().slice(0, 10)}）`);
 await page.locator('.q-area .chip-row .chip').first().click();
 ok((await page.locator('.q-area .chip.on').count()) >= 1, '勾选景点高亮');
+// v1.9.0 边录边搜（需求 8）：输入即出库内建议；搜不到就按用户写的文本加
+await page.locator('.spot-add input').fill('西');
+await page.waitForSelector('.sug-inline .s', { timeout: 6000 });
+const sugTxt = (await page.locator('.sug-inline .s').first().innerText()).trim();
+ok(sugTxt.length > 0, `景点步边录边搜：输入「西」即出建议（${sugTxt.replace(/\s+/g, ' ').slice(0, 16)}）`);
+await page.locator('.spot-add input').fill('手工景点Render');
+await page.waitForTimeout(400);
+await page.locator('.spot-add button').click();
+await page.waitForFunction(() => document.querySelectorAll('.spot-list li').length === 2, null, { timeout: 6000 });
+ok(true, '景点步：库内勾选 + 手输新增共 2 个（顺序即路线顺序）');
 await page.locator('.nav-row button').filter({ hasText: '下一问' }).click();
 // 照片步：真上传一张 1x1 PNG + AI 配文（桩）
 await page.waitForSelector('.padd', { timeout: 6000 });
 const tmpPng = path.join(require('node:os').tmpdir(), 'alleyu-render-1x1.png');
 fs.writeFileSync(tmpPng, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'));
+ok((await page.locator('.pgroup').count()) === 2, '照片步按景点分组（2 个景点 2 组）');
+ok((await page.locator('.pgroup .btn-plain').count()) === 4, '每个景点名后有无色上下按钮（2×2）');
+const pgOrder1 = await page.locator('.pg-head b').allInnerTexts();
+await page.locator('.pgroup').nth(1).locator('.btn-plain').first().click(); // ↑ 上移第二组
+await page.waitForTimeout(700);
+const pgOrder2 = await page.locator('.pg-head b').allInnerTexts();
+ok(pgOrder2[0] === pgOrder1[1] && pgOrder2[1] === pgOrder1[0], `↑ 按钮真的换了景点顺序（${pgOrder1.join(' / ')} → ${pgOrder2.join(' / ')}）`);
+await page.locator('.pgroup').first().locator('.note-in').fill('第一站的体会：风把柳絮吹了满脸');
+await page.locator('.pgroup').first().locator('.note-in').press('Tab'); // 失焦落库
+await page.waitForTimeout(400);
+ok(true, '每景点名后留体会输入框（AI 融合素材）');
 await page.locator('.q-area input[type=file]').first().setInputFiles(tmpPng);
 await page.waitForSelector('.pbox img', { timeout: 8000 });
 ok(true, '照片上传成功渲染');
+const wpnum = (await page.locator('.pbox .pnum').first().innerText()).trim();
+ok(/^\(photo:\d+\)$/.test(wpnum), `照片右下角标出正文占位编号（${wpnum}）`);
 await page.screenshot({ path: path.join(IMG_DIR, '游记-向导.png'), fullPage: false });
 await page.locator('.pbtns button').filter({ hasText: 'AI 写' }).click();
 await page.waitForFunction(() => {
@@ -398,6 +421,7 @@ await page.locator('.nav-row button').filter({ hasText: '下一问' }).click();
 // 生成 → 详情页 SSE 到 done
 await page.locator('.nav-row button').filter({ hasText: '生成游记' }).click();
 await page.waitForURL(/#\/journal\/\d+/, { timeout: 8000 });
+const jidCreated = Number(((page.url().match(/journal\/(\d+)/) || [])[1])); // 收尾按这个 id 删，别靠列表顺序猜
 await page.waitForFunction(() => {
   const t = document.querySelector('.cvr-title');
   return t && t.textContent.trim().length > 0;
@@ -411,18 +435,55 @@ ok((await page.locator('.pal').count()) === 5, '莫兰迪配色 5 套可选');
 await page.locator('.pal').nth(1).click();
 await page.waitForTimeout(400);
 ok((await page.locator('.pal.on').innerText()).includes('豆沙粉'), '切换配色=豆沙粉');
-ok((await page.locator('.thumb.on .cov-badge').count()) === 1, '照片条当前封面有徽标');
+// v1.9.0 需求 5：封面下的照片条默认折叠，展开后每张右下角标 (photo:N)
+ok((await page.locator('.strip').count()) === 0, '照片条默认折叠（封面下方不铺图）');
+ok((await page.locator('.thumb.on .cov-badge').count()) === 0, '折叠时看不到封面徽标（图没渲染）');
+await page.locator('.strip-wrap button').filter({ hasText: '展开照片' }).click();
+await page.waitForSelector('.thumb', { timeout: 6000 });
+ok((await page.locator('.thumb.on .cov-badge').count()) === 1, '展开后：当前封面有徽标');
+const dpnum = (await page.locator('.thumb .pnum').first().innerText()).trim();
+ok(/^\(photo:\d+\)$/.test(dpnum), `照片右下角显示正文占位编号（${dpnum}）`);
 await page.waitForSelector('.jr-md img', { timeout: 8000 });
 ok(true, '正文 photo:N 占位换成真图');
-// 二次编辑
+// v1.9.0 需求 2：左侧大纲（景点排序 + 新增），需求 6：标题下方路线卡
+ok((await page.locator('.out-item').count()) === 2, '左侧大纲列出全部景点');
+const outOrder = await page.locator('.out-item .out-name').allInnerTexts();
+ok(outOrder[0] === pgOrder2[0] && outOrder[1] === pgOrder2[1], `大纲顺序=向导里排定的顺序（${outOrder.join(' / ')}）`);
+ok((await page.locator('.out-item .out-name[title*="风把柳絮"]').count()) === 1, '景点体会跟着大纲留存（hover 可见）');
+await page.locator('.out-add input').fill('大纲新增点');
+await page.locator('.out-add button').click();
+await page.waitForFunction(() => document.querySelectorAll('.out-item').length === 3, null, { timeout: 6000 });
+ok(true, '大纲可手输新增景点（落库回读）');
+// 路线卡：服务端配了高德 Key 就真出图（会打外网，给足时间），没配就如实说明画不了
+const routeAppear = await page.waitForSelector('.route-card', { timeout: 25000 }).then(() => true).catch(() => false);
+ok(routeAppear, '标题下方出现景点路线卡（≥2 个景点自动算）');
+const routeTxt = routeAppear ? (await page.locator('.route-card').innerText()).replace(/\s+/g, ' ').trim() : '';
+const routeImg = routeAppear && (await page.locator('.route-img').count()) === 1;
+ok(routeImg || /没画出连线/.test(routeTxt), routeImg ? `路线图出图 + 文字摘要（${routeTxt.slice(0, 70)}）` : `路线不可用时如实说明（${routeTxt.slice(0, 70)}）`);
+await page.screenshot({ path: path.join(IMG_DIR, '游记-详情.png'), fullPage: false });
+// 二次编辑：自动保存 → 保存一版 → 恢复原版 → 恢复一版
 await page.locator('.jd-head button').filter({ hasText: '编辑' }).click();
 await page.waitForSelector('.editarea', { timeout: 6000 });
 const jMarker = '游记编辑标记RenderE2E';
 await page.locator('.editarea').evaluate((el, m) => { el.value += '\n\n## ' + m + '\n'; el.dispatchEvent(new Event('input', { bubbles: true })); }, jMarker);
-await page.locator('.pb-bar button').filter({ hasText: '保存修改' }).click();
-await page.waitForTimeout(800);
-ok((await page.locator('.jr-md').innerText()).includes(jMarker), '二次编辑保存后正文即时更新');
-await page.screenshot({ path: path.join(IMG_DIR, '游记-详情.png'), fullPage: false });
+await page.waitForFunction(() => /已自动保存/.test((document.querySelector('.pb-btns') || {}).innerText || ''), null, { timeout: 10000 });
+ok(true, '编辑自动保存（防抖 1.2s 后自己落库，不点按钮）');
+await page.locator('.pb-bar button').filter({ hasText: '保存一版' }).click();
+await page.waitForFunction(() => /已保存一版/.test((document.querySelector('.pb-btns') || {}).innerText || ''), null, { timeout: 10000 });
+ok(true, '【保存一版】把手动版单独留档（旧名「保存修改」）');
+ok(await page.locator('.pb-bar button').filter({ hasText: '恢复一版' }).isEnabled(), '【恢复一版】可用（手动版已存在）');
+ok(await page.locator('.pb-bar button').filter({ hasText: '恢复原版' }).isEnabled(), '【恢复原版】可用（系统生成版已留档）');
+page.once('dialog', (d) => d.accept());
+await page.locator('.pb-bar button').filter({ hasText: '恢复原版' }).click();
+await page.waitForFunction((m) => !document.querySelector('.editarea').value.includes(m), jMarker, { timeout: 10000 });
+ok(true, '【恢复原版】回到系统自动生成的那一份（编辑标记消失）');
+page.once('dialog', (d) => d.accept());
+await page.locator('.pb-bar button').filter({ hasText: '恢复一版' }).click();
+await page.waitForFunction((m) => document.querySelector('.editarea').value.includes(m), jMarker, { timeout: 10000 });
+ok(true, '【恢复一版】回到手动保存的那一份（编辑标记回来）');
+await page.locator('.pb-bar button').filter({ hasText: '取消' }).click();
+await page.waitForSelector('.jr-md', { timeout: 6000 });
+ok((await page.locator('.jr-md').innerText()).includes(jMarker), '取消编辑后正文即时更新');
 // 导出三件：PNG（canvas）+ PDF A4 + PDF 长图
 const pngDlP = page.waitForEvent('download', { timeout: 20000 });
 await page.locator('.jd-head button').filter({ hasText: '导出PNG' }).click();
@@ -438,16 +499,27 @@ if (FONTS_OK) {
   const longDl = await longDlP;
   ok(longDl.suggestedFilename().endsWith('.pdf') && /长图/.test(longDl.suggestedFilename()), '导出 PDF·长图（文件名含 长图）');
 }
+// v1.9.0 需求 10：成稿后的右上角不是「重新跑一遍提示词」，而是回引导模式改答案再走一遍
+ok((await page.locator('.jd-head button').filter({ hasText: '重新生成' }).count()) === 0, '成稿后不再有「重新生成」（不会原地重跑 AI）');
+ok((await page.locator('.jd-head button').filter({ hasText: '回引导修改' }).count()) === 1, '成稿页右上角=「回引导修改」');
+page.once('dialog', (d) => d.accept());
+await page.locator('.jd-head button').filter({ hasText: '回引导修改' }).click();
+await page.waitForURL(/journals\/new\?draft=\d+/, { timeout: 8000 });
+await page.waitForSelector('.wiz', { timeout: 6000 });
+await page.waitForFunction(() => document.querySelector('.q-area input.input') && document.querySelector('.q-area input.input').value, null, { timeout: 6000 });
+ok((await page.locator('.q-area input.input').inputValue()) === '杭州', '回引导：填好的内容留着（草稿续写，不用重填）');
+ok((await page.locator('.steps-bar .st').count()) === 14, '回引导后仍在 14 步向导里（可继续走完步骤）');
+
 // 列表回看 + 清理（render 桩服务器共用真实 data/，测完删掉这篇）
 await page.goto(URL_BASE + '/#/journals');
 await page.waitForTimeout(800);
 const jRow = page.locator('.tb td').filter({ hasText: jTitle });
 ok((await jRow.count()) >= 1, '游记列表出现刚生成的一篇');
 await page.screenshot({ path: path.join(IMG_DIR, '游记-列表.png'), fullPage: false });
-const jidM = ((await page.locator('.tb a').first().getAttribute('href')) || '').match(/journal\/(\d+)/);
-if (jidM) {
-  await fetch(URL_BASE + '/api/journals/' + jidM[1], { method: 'DELETE', headers: { Authorization: 'Bearer ' + tk } });
-  console.log('  （已清理 render 生成的游记 #' + jidM[1] + '）');
+if (jidCreated) {
+  const del = await fetch(URL_BASE + '/api/journals/' + jidCreated, { method: 'DELETE', headers: { Authorization: 'Bearer ' + tk } });
+  console.log(`  （清理 render 生成的游记 #${jidCreated}：HTTP ${del.status}）`);
+  if (!del.ok) console.log('  ⚠️ 没删掉，手工删 journals 里这一行 + data/journal_photos/' + jidCreated + '/');
 }
 
 // ---- v1.8.0 游客模式 + 登录页分栏（匿名 context） ----

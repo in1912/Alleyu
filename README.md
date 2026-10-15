@@ -51,6 +51,20 @@ docker compose up -d
 
 前端构建产物已随仓库分发（`web/dist/<时间戳>/`，`.latest` 指当前版），clone 即用；改前端才需要重新构建（见下）。
 
+## 三端分发包
+
+`node scripts/build-dist-packages.mjs` 在仓库根目录产出三个 zip（`*.zip` 已在 .gitignore 里，不入库）：
+
+| 包 | 带什么 | 落地方式 |
+|---|---|---|
+| `游巷-<版本>-windows.zip` | 运行时 + **生产依赖**（node_modules）+ `start.bat` | 解压双击，Node ≥22.5，不用联网装依赖 |
+| `游巷-<版本>-macos.zip` | 同上，启动器换成 `start.command` | 首次 `chmod +x start.command` 再双击 |
+| `游巷-<版本>-docker.zip` | 源码 + `Dockerfile` / `docker-compose.yml` / `.dockerignore` | 不带 node_modules，`docker compose up -d --build` 时装 |
+
+三个包一视同仁地抠掉这些东西：`data/`（改成空壳，首启自动建库——库、`.secret`、AI Key、高德 Key、`mapimg/` 都在里面，绝不能进包）、`Logs/`、`img/`、`scripts/`（自检脚本要 playwright，属开发件）、源码 `web/src/`，`web/dist` 只带最新一份。分发版 README 里的配图行会自动摘掉（截图在项目主页看），包内另有一份按端写好的 `部署说明.txt`。压缩走 `scripts/zip-utf8.py` 而不是 tar——`tar`/bsdtar 写 zip 不给中文名打 UTF-8 标志位，Windows 解压出来是乱码。
+
+`start.command` 会先把 Node 版本卡在 22.5：本应用用 Node 内置的 `node:sqlite`，22.4 及以下没有这个模块，起不来。
+
 ## 配置
 
 | 环境变量 | 默认 | 说明 |

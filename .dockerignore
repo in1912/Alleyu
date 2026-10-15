@@ -1,0 +1,11 @@
+# 构建上下文排除：data/ 里有数据库、.secret、AI Key 与高德 Key，绝不能进构建上下文
+data
+Logs
+img
+node_modules
+web/node_modules
+.git
+.gitignore
+*.log
+*.zip
+CLAUDE.md

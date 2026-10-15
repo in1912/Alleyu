@@ -12,8 +12,8 @@ const defaultDataDir = path.join(__dirname, '..', 'data');
 const dataDir = process.env.DATA_DIR || defaultDataDir;
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
-// 内置高德 Key（env AMAP_KEY 可覆盖）：仅供首次空库种子与「恢复内置 Key」用
-const DEFAULT_AMAP_KEY = process.env.AMAP_KEY || 'REMOVED-PRIVATE-AMAP-KEY';
+// v1.6.3 起不内置任何高德 Key（历史内置值已作废清除）：Key 由管理员在设置页自行配置，
+// 或部署时用 env AMAP_KEY 注入（只在首次空库种子时生效）
 
 const dbFile = process.env.DB_FILE || 'alleyu.sqlite';
 const dbPath = path.join(dataDir, dbFile);
@@ -695,10 +695,10 @@ function seedIfEmpty() {
       for (const [name, type, level, ticket, hours, must] of list) ins.run(c.id, name, type, level, ticket, hours, must);
     }
   }
-  // 高德 Key 种子：env 注入优先，否则用随项目交付的默认 key（管理员可在设置里换）
-  if (!getSetting('amap_key')) setSetting('amap_key', DEFAULT_AMAP_KEY);
+  // 高德 Key 种子：只在 env AMAP_KEY 注入且库内为空时落一次（之后以库内为准）
+  if (!getSetting('amap_key') && process.env.AMAP_KEY) setSetting('amap_key', process.env.AMAP_KEY);
 }
 seedIfEmpty();
 seedIntlLines(); // v1.3.0 国际线路（幂等标记，见函数注释）
 
-module.exports = { db, getSetting, setSetting, addCol, DEFAULT_AMAP_KEY };
+module.exports = { db, getSetting, setSetting, addCol };

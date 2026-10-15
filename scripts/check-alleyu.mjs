@@ -180,7 +180,14 @@ try {
   r = await req('/api/settings', { method: 'PUT', token: admin, body: { amap_key: 'not-hex-zzz' } });
   ok(r.status === 400, '高德 Key 非法格式 400');
   r = await req('/api/settings/amap/reset', { method: 'POST', token: admin });
-  ok(r.status === 200 && r.j.ok === true, '恢复内置高德 Key');
+  ok(r.status === 200 && r.j.ok === true && r.j.amap_key_set === false, '清空高德 Key（v1.6.3 起无内置默认）');
+  // v1.6.3 起无内置 Key：地图断言分两支——env AMAP_KEY 注入=完整地图链路（真实外网）；
+  // 未注入=无 Key 优雅降级（攻略照常完成、不伪造任何地图图）。上面 reset 会清掉 env 种子，这里补回。
+  const envAmapKey = String(process.env.AMAP_KEY || '').trim();
+  if (envAmapKey) {
+    await req('/api/settings', { method: 'PUT', token: admin, body: { amap_key: envAmapKey } });
+  }
+  const amapReady = !!envAmapKey;
 
   // v1.1.0 起桩是「无配置时兜底」：配了真实 Key 一律走真接口。
   // 下面攻略生成要走桩，必须先清掉全局配置（上面写入的是假地址 example.com）
@@ -210,11 +217,19 @@ try {
     ok(guide.content.includes('## 一、旅行总览') && guide.content.includes('## 九、可选拓展'), '固定九模块框架齐');
     ok(/### Day 1｜/.test(guide.content), 'Day 小节标题格式');
     ok(guide.content.includes('天气推演') || guide.content.includes('天气研判') || guide.content.includes('逐日预报'), '天气块已插入');
-    ok((guide.images || []).some((x) => x.type === 'cover' && String(x.url).includes('/api/amap/mapimg/')), '封面=全程路线地图（非随机照片）');
-    ok(guide.content.includes('![封面地图]('), '封面地图插在正文顶部');
-    ok((guide.images || []).some((x) => x.type === 'overview'), '总览地图');
-    ok((guide.images || []).some((x) => x.type === 'route'), '每日路线图');
-    ok((guide.images || []).some((x) => x.type === 'photo'), '景点实景照片');
+    if (amapReady) {
+      ok((guide.images || []).some((x) => x.type === 'cover' && String(x.url).includes('/api/amap/mapimg/')), '封面=全程路线地图（非随机照片）');
+      ok(guide.content.includes('![封面地图]('), '封面地图插在正文顶部');
+      ok((guide.images || []).some((x) => x.type === 'overview'), '总览地图');
+      ok((guide.images || []).some((x) => x.type === 'route'), '每日路线图');
+      ok((guide.images || []).some((x) => x.type === 'photo'), '景点实景照片');
+    } else {
+      ok(!(guide.images || []).some((x) => String(x.url).includes('/api/amap/mapimg/')), '无 Key：不产任何地图图（不伪造）');
+      ok(!guide.content.includes('![封面地图]('), '无 Key：正文不插封面地图');
+      ok(!(guide.images || []).some((x) => x.type === 'overview'), '无 Key：无总览图');
+      ok(!(guide.images || []).some((x) => x.type === 'route'), '无 Key：无路线图');
+      ok(!(guide.images || []).some((x) => x.type === 'photo'), '无 Key：无实景照片');
+    }
     ok(guide.content.includes('## 生成来源') && guide.content.includes('https://lbs.amap.com') && guide.content.includes('https://open-meteo.com'), '页脚生成来源+来源链接');
   }
   // 多租户隔离：admin 看不到 u1 的攻略详情？——管理员也无权读他人攻略（本设计 guides 仅本人）
@@ -230,7 +245,11 @@ try {
   ok(firstContent && firstContent[0] === 'reset', 'SSE 首拍=reset 全文快照（前插封面/重连不丢不重）');
   ok(sseEvents.some(([nm]) => nm === 'done'), 'SSE 终态 done 事件');
   const resetText = firstContent ? JSON.parse(firstContent[1]).text : '';
-  ok(resetText.includes('![封面地图](') && resetText.indexOf('![封面地图](') < 100, '快照含顶部封面地图（守在页上看完生成也拿得到）');
+  if (amapReady) {
+    ok(resetText.includes('![封面地图](') && resetText.indexOf('![封面地图](') < 100, '快照含顶部封面地图（守在页上看完生成也拿得到）');
+  } else {
+    ok(!resetText.includes('![封面地图]('), '无 Key：快照无封面地图（与降级口径一致）');
+  }
 
   // ---- 生成中直播流（v1.5.0）----
   // v1.4.0 快照协议只对「已完成」攻略验证过 reset/done；生成中的 delta 直播从未直接验过
@@ -535,10 +554,17 @@ try {
   // ---- 在线（真实外网） ----
   if (ONLINE) {
     console.log('== 在线真实接口 ==');
-    r = await req('/api/poi?q=' + encodeURIComponent('西湖') + '&city=' + encodeURIComponent('杭州'), { token: admin });
-    ok(r.status === 200 && r.j.pois.length > 0 && r.j.pois[0].location, '高德 POI 检索（真实 Key）');
-    r = await req('/api/settings/amap/test', { method: 'POST', token: admin, body: {} });
-    ok(r.status === 200 && r.j.ok === true, '高德 Key 连通测试（种子 Key 真连）');
+    if (amapReady) {
+      r = await req('/api/poi?q=' + encodeURIComponent('西湖') + '&city=' + encodeURIComponent('杭州'), { token: admin });
+      ok(r.status === 200 && r.j.pois.length > 0 && r.j.pois[0].location, '高德 POI 检索（env AMAP_KEY 真连）');
+      r = await req('/api/settings/amap/test', { method: 'POST', token: admin, body: {} });
+      ok(r.status === 200 && r.j.ok === true, '高德 Key 连通测试（env AMAP_KEY 真连）');
+    } else {
+      r = await req('/api/poi?q=' + encodeURIComponent('西湖') + '&city=' + encodeURIComponent('杭州'), { token: admin });
+      ok(r.status !== 500 && !(r.j && r.j.pois && r.j.pois.length), '无 Key：POI 接口优雅拒绝（不 500、不返回假数据）');
+      r = await req('/api/settings/amap/test', { method: 'POST', token: admin, body: {} });
+      ok(r.status === 200 && r.j.ok === false && /尚未配置/.test(r.j.info || ''), '无 Key：连通测试如实回「尚未配置 Key」');
+    }
     r = await req('/api/weather?q=' + encodeURIComponent('杭州') + '&mode=forecast&days=5', { token: admin });
     ok(r.status === 200 && r.j.daily && r.j.daily.length >= 4, 'Open-Meteo 预报');
     r = await req('/api/weather?q=' + encodeURIComponent('昆明') + '&mode=history&month=3', { token: admin });

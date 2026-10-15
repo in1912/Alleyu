@@ -40,7 +40,7 @@
         <div style="align-self: end; display: flex; gap: 8px; flex-wrap: wrap">
           <button class="btn ghost" @click="saveAmap">保存</button>
           <button class="btn ghost" @click="testAmap">测试连通</button>
-          <button class="btn ghost" @click="resetAmap">恢复内置</button>
+          <button class="btn ghost" @click="resetAmap">清空</button>
         </div>
       </div>
       <p v-if="amapMsg" :class="amapOk ? 'ok-text' : 'err-text'" style="margin: 8px 0 0; font-size: 13px">
@@ -131,11 +131,11 @@ async function testAmap() {
   } catch (e) { amapMsg.value = e.message; }
 }
 async function resetAmap() {
-  if (!confirm('恢复为项目内置的高德 Key？（自己配的 Key 会被覆盖）')) return;
+  if (!confirm('清空已保存的高德 Key？（之后需要重新配置才能用地图功能）')) return;
   try {
     await api('/settings/amap/reset', { method: 'POST' });
-    g.amapSet = true; g.amapKey = '';
-    amapOk.value = true; amapMsg.value = '已恢复内置 Key';
+    g.amapSet = false; g.amapKey = '';
+    amapOk.value = true; amapMsg.value = '高德 Key 已清空，请到 lbs.amap.com 申请自己的 Key 后在上方填入';
   } catch (e) { amapOk.value = false; amapMsg.value = e.message; }
 }
 async function savePwd() {

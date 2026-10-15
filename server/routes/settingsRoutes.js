@@ -1,6 +1,6 @@
 // 系统设置（admin）：高德 Key、系统信息。AI 全局 Key 在 /ai 路由。
 const express = require('express');
-const { db, getSetting, setSetting, DEFAULT_AMAP_KEY } = require('../db');
+const { db, getSetting, setSetting } = require('../db');
 const packageJson = require('../../package.json');
 
 const r = express.Router();
@@ -64,11 +64,11 @@ r.post('/amap/test', async (req, res) => {
   }
 });
 
-// 恢复内置默认 Key（用户自己配的 Key 出问题时一键回退）
+// 清空高德 Key（v1.6.3 起没有内置默认值，清空后到设置页重新配置）
 r.post('/amap/reset', (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: '仅管理员' });
-  setSetting('amap_key', DEFAULT_AMAP_KEY);
-  res.json({ ok: true, amap_key_set: true });
+  setSetting('amap_key', '');
+  res.json({ ok: true, amap_key_set: false });
 });
 
 module.exports = r;

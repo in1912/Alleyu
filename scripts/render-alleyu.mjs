@@ -1,8 +1,9 @@
 // 渲染自检（Playwright，借用工作台的 node_modules）：
 //   NODE_PATH=D:\cc\personal-workbench\node_modules node scripts/render-alleyu.mjs
-// 默认自起确定性桩服务器（ALLEYU_AI_FORCE_STUB=1，共享 data/ 的真实高德 Key 与城市库，
-// 独占 9610 端口）——起因 v1.5.0：本机 data/ 存着用户真 Key，过去 render 的「现场生成」
-// 一直在打真实 DeepSeek（首字 20s+、偶发空流），直播流断言随机红。
+// 默认自起确定性桩服务器（ALLEYU_AI_FORCE_STUB=1，共享 data/ 的城市库与高德 Key（v1.6.3 起
+// Key 不内置，库里有才产地图，没有走无图降级断言），独占 9610 端口）——起因 v1.5.0：本机
+// data/ 存着用户真 Key，过去 render 的「现场生成」一直在打真实 DeepSeek（首字 20s+、偶发空流），
+// 直播流断言随机红。
 // 设 ALLEYU_URL 可改打外部已运行的服务器（不自起、不强制桩）。
 import process from 'node:process';
 import path from 'node:path';
@@ -160,14 +161,26 @@ ok(peekOk, '生成中：3 行实时内容小窗有模型返回的真文字');
 ok(done && done.status === 'done', '桩模式现场生成新攻略（≤240s，高德配图限速串行波动大）');
 let detailShotDone = false;
 if (done && done.status === 'done') {
-  ok(done.content.includes('![封面地图](') && done.content.includes('## 生成来源'), '服务端：封面地图在顶部 + 生成来源页脚');
-  await page.goto(URL_BASE + '/#/guide/' + genRes.id);
-  await page.waitForSelector('.md img', { timeout: 20000 });
-  await page.waitForTimeout(600);
-  const firstAlt = await page.locator('.md img').first().getAttribute('alt');
-  ok(firstAlt === '封面地图', '详情页第一张图=封面地图（不再用随机照片）');
-  const filt = await page.evaluate(() => { const el = document.querySelector('.md img[alt="封面地图"]'); return el ? getComputedStyle(el).filter : ''; });
-  ok(/sepia/.test(filt) && /hue-rotate/.test(filt), '封面地图偏蓝单色（sepia+hue-rotate 滤镜，非黑白）');
+  // v1.6.3 起高德 Key 不内置：库里有 Key=完整地图断言；没有=降级断言（无图但不伪造，页脚照常）
+  const hasCoverMap = (done.images || []).some((x) => x.type === 'cover');
+  if (hasCoverMap) {
+    ok(done.content.includes('![封面地图](') && done.content.includes('## 生成来源'), '服务端：封面地图在顶部 + 生成来源页脚');
+    await page.goto(URL_BASE + '/#/guide/' + genRes.id);
+    await page.waitForSelector('.md img', { timeout: 20000 });
+    await page.waitForTimeout(600);
+    const firstAlt = await page.locator('.md img').first().getAttribute('alt');
+    ok(firstAlt === '封面地图', '详情页第一张图=封面地图（不再用随机照片）');
+    const filt = await page.evaluate(() => { const el = document.querySelector('.md img[alt="封面地图"]'); return el ? getComputedStyle(el).filter : ''; });
+    ok(/sepia/.test(filt) && /hue-rotate/.test(filt), '封面地图偏蓝单色（sepia+hue-rotate 滤镜，非黑白）');
+  } else {
+    ok(!done.content.includes('![封面地图](') && done.content.includes('## 生成来源'), '无 Key：正文无封面地图、生成来源页脚仍在');
+    await page.goto(URL_BASE + '/#/guide/' + genRes.id);
+    await page.waitForSelector('.md', { timeout: 20000 });
+    await page.waitForTimeout(600);
+    const noCover = await page.locator('.md img[alt="封面地图"]').count();
+    ok(noCover === 0, '无 Key：详情页不显示封面地图（不伪造）');
+    ok(!(done.images || []).length, '无 Key：images 数组不产任何图（地图/照片全跳过）');
+  }
   const mdText2 = await page.locator('.md').innerText();
   ok(/生成来源/.test(mdText2) && /高德开放平台/.test(mdText2) && /Open-Meteo/.test(mdText2), '生成来源+链接渲染在攻略底部');
   // v1.5.0：完整提示词折叠框（生成来源之下的最后一块）

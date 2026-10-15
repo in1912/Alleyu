@@ -8,3 +8,5 @@ Logs/
 # 首页场景的原始素材（开发参考，不入库）
 cy.html
 _spec_extract.txt
+# CLAUDE.md 是本地 AI 作业指引，不入库（与 .git/info/exclude 双重排除）
+CLAUDE.md

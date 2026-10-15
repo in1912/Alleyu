@@ -134,11 +134,14 @@
                 <line x1="32" y1="3" x2="46" y2="1" />
                 <line x1="32" y1="8" x2="46" y2="10" />
               </g>
+              <!-- 两只眼（用户 v1.6.2 要求）：侧面视角下前眼+后眼；后眼同组同 opacity，眨眼/笑眼自动联动 -->
               <g id="riderEyeOpen" transform="translate(16, -11)">
                 <circle cx="0" cy="0" r="5.5" fill="#1e293b" />
                 <circle cx="-1.8" cy="-2" r="2.2" fill="#ffffff" />
+                <circle cx="-26" cy="0" r="4.6" fill="#1e293b" />
+                <circle cx="-27.6" cy="-1.8" r="1.9" fill="#ffffff" />
               </g>
-              <path id="riderEyeHappy" d="M 10 -11 Q 16 -19 22 -11" fill="none" stroke="#1e293b" stroke-width="3.5" stroke-linecap="round" opacity="0" />
+              <path id="riderEyeHappy" d="M 10 -11 Q 16 -19 22 -11 M -16 -11 Q -10 -18.5 -4 -11" fill="none" stroke="#1e293b" stroke-width="3.5" stroke-linecap="round" opacity="0" />
               <g id="rabbitFrontEar" transform="translate(-16, -26)">
                 <path d="M 0 0 C -15 -24 -17 -56 -6 -72 C 7 -66 13 -26 8 -2 Z" fill="url(#furGrad)" stroke="#b9ac93" stroke-width="2.5" />
                 <path d="M -3 -8 C -11 -26 -12 -50 -5 -62 C 3 -52 6 -26 3 -10 Z" fill="#f6c3cf" opacity="0.85" />

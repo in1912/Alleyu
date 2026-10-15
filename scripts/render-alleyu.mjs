@@ -73,6 +73,11 @@ const svgCount = await page.locator('.scene-box svg #riderHeadGroup').count();
 ok(svgCount === 1, '兔子+自行车 SVG 结构存在');
 const earCount = await page.locator('.scene-box svg #rabbitFrontEar').count();
 ok(earCount === 1, '兔耳朵存在');
+// v1.6.2：两只眼睛（riderEyeOpen 组内 2 颗深色眼球 + 笑眼 path 两段弧）
+const eyeBalls = await page.locator('.scene-box svg #riderEyeOpen circle[fill="#1e293b"]').count();
+ok(eyeBalls === 2, '兔子两只眼睛（前眼+后眼）');
+const happyArcs = (await page.locator('.scene-box svg #riderEyeHappy').getAttribute('d')) || '';
+ok(happyArcs.split('M').length - 1 === 2, '笑眼弧线两段（两只眼都笑）');
 const furGrad = await page.locator('.scene-box svg #furGrad').count();
 ok(furGrad === 1 && (await page.locator('.scene-box svg #pigSkinGrad').count()) === 0, '乳白毛色渐变（旧猪皮渐变已除）');
 const hasSky = await page.locator('.scene-box svg rect[fill="url(#skyGrad)"]').count();

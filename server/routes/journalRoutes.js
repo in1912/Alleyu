@@ -8,6 +8,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { db } = require('../db');
 const js = require('../services/journalService');
+const { checkQuota } = require('../quota');
 
 const r = express.Router();
 const PHOTO_DIR = path.join(process.env.DATA_DIR || path.join(__dirname, '..', '..', 'data'), 'journal_photos');
@@ -196,7 +197,8 @@ r.post('/:id/photos/:pid/caption-ai', async (req, res) => {
     const cfg = require('../services/aiService').resolveConfig();
     if (!cfg || cfg.source === 'stub') text = js.stubCaption(p.spot, userText);
     else {
-      text = await js.aiText(js.captionMessages(p.spot, userText), userText ? 500 : 80);
+      // 配文不扣生成次数，但要计 token（v1.10.0 用户点名：累计用量含这些小调用）
+      text = await js.aiText(js.captionMessages(p.spot, userText), userText ? 500 : 80, js.usageSink(req.user.id, cfg));
       if (!text) throw new Error('AI 返回为空');
     }
     db.prepare("UPDATE journal_photos SET caption=?, caption_by='ai' WHERE id=?").run(text.slice(0, 2000), p.id);
@@ -214,6 +216,9 @@ r.post('/:id/generate', (req, res) => {
   const j = myJournal(req, req.params.id);
   if (!j) return res.status(404).json({ error: '游记不存在' });
   if (j.status === 'pending') return res.status(409).json({ error: '正在生成中' });
+  // 生成次数闸门（v1.10.0）：404/409 都得先于 403 —— 否则拿别人的 id 会看到「次数已用完」这种莫名其妙的提示
+  const q = checkQuota(req.user, 'journal');
+  if (q) return res.status(q.status).json({ error: q.error });
   const mergeGuideId = (req.body || {}).merge_guide_id;
   if (mergeGuideId) {
     const g = db.prepare('SELECT id FROM guides WHERE id=? AND user_id=?').get(Number(mergeGuideId), req.user.id);
@@ -231,6 +236,8 @@ r.post('/:id/regenerate', (req, res) => {
   const j = myJournal(req, req.params.id);
   if (!j) return res.status(404).json({ error: '游记不存在' });
   if (j.status === 'pending') return res.status(409).json({ error: '正在生成中' });
+  const q = checkQuota(req.user, 'journal');
+  if (q) return res.status(q.status).json({ error: q.error });
   js.run(j.id);
   res.status(202).json({ ok: true });
 });
@@ -276,7 +283,7 @@ r.post('/:id/title', async (req, res) => {
     const cfg = require('../services/aiService').resolveConfig();
     if (!cfg || cfg.source === 'stub') t = js.stubTitle(j);
     else {
-      t = await js.aiText(js.titleMessages(j), 120);
+      t = await js.aiText(js.titleMessages(j), 120, js.usageSink(req.user.id, cfg));
       if (!t) throw new Error('AI 返回为空');
     }
     t = t.replace(/["「」《》\s]/g, '').slice(0, 20);

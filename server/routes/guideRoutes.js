@@ -7,6 +7,7 @@ const { db } = require('../db');
 const { generateGuide } = require('../services/guideService');
 const { renderGuidePdf } = require('../services/pdfService');
 const { globalConfig } = require('../services/aiService');
+const { checkQuota } = require('../quota');
 
 const r = express.Router();
 
@@ -44,6 +45,9 @@ r.post('/', async (req, res) => {
   // AI 闸门：admin 恒可，普通用户看 can_use_ai；且必须有可用配置（自己或全局）
   const gate = req.user.role === 'admin' || req.user.can_use_ai;
   if (!gate) return res.status(403).json({ error: '管理员未给你开通 AI 使用权限' });
+  // 生成次数闸门（v1.10.0）：这里只拦「开跑」，扣数在 guideService 真写出成稿后（失败/重试不扣）
+  const q = checkQuota(req.user, 'guide');
+  if (q) return res.status(q.status).json({ error: q.error });
   const stubbed = process.env.ALLEYU_AI_STUB === '1' || process.env.ALLEYU_AI_FORCE_STUB === '1';
   if (!stubbed && !globalConfig()) {
     return res.status(400).json({ error: '尚无可用 AI 配置：请管理员在「设置→全局配置」填写接口与 Key' });
@@ -95,6 +99,8 @@ r.post('/:id/regenerate', async (req, res) => {
   }
   const gate = req.user.role === 'admin' || req.user.can_use_ai;
   if (!gate) return res.status(403).json({ error: '管理员未给你开通 AI 使用权限' });
+  const q = checkQuota(req.user, 'guide');
+  if (q) return res.status(q.status).json({ error: q.error });
   const stubbed = process.env.ALLEYU_AI_STUB === '1' || process.env.ALLEYU_AI_FORCE_STUB === '1';
   if (!stubbed && !globalConfig()) {
     return res.status(400).json({ error: '尚无可用 AI 配置：请管理员在「设置→全局配置」填写接口与 Key' });

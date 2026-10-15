@@ -52,6 +52,16 @@ CREATE TABLE IF NOT EXISTS users (
   ai_base_url TEXT NOT NULL DEFAULT '',
   ai_model TEXT NOT NULL DEFAULT '',
   ai_key TEXT NOT NULL DEFAULT '',
+  -- v1.10.0：注册/配额/用量（老库由下面 addCol 幂等补列）
+  --  quota_*: -1=跟随系统默认 / -2=不限次数 / >=0=指定总额
+  --  tokens_*: 累计消耗（只在服务商回包带 usage 时累加，桩模式不记）
+  email TEXT NOT NULL DEFAULT '',
+  quota_guide INTEGER NOT NULL DEFAULT -1,
+  quota_journal INTEGER NOT NULL DEFAULT -1,
+  guide_used INTEGER NOT NULL DEFAULT 0,
+  journal_used INTEGER NOT NULL DEFAULT 0,
+  tokens_in INTEGER NOT NULL DEFAULT 0,
+  tokens_out INTEGER NOT NULL DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
@@ -161,6 +171,18 @@ CREATE TABLE IF NOT EXISTS journal_photos (
   created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 CREATE INDEX IF NOT EXISTS idx_jphotos_journal ON journal_photos(journal_id);
+
+-- v1.10.0 邀请码：注册恒定要码。max_uses=1 即一次性码；used_count 由注册时的条件 UPDATE 原子累加。
+CREATE TABLE IF NOT EXISTS invite_codes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code TEXT NOT NULL UNIQUE,
+  max_uses INTEGER NOT NULL DEFAULT 1,
+  used_count INTEGER NOT NULL DEFAULT 0,
+  note TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_by INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now','localtime'))
+);
 `;
 db.exec(DDL);
 
@@ -192,6 +214,15 @@ addCol('attractions', 'rating', "TEXT NOT NULL DEFAULT ''");
 addCol('journals', 'content_original', "TEXT NOT NULL DEFAULT ''");
 addCol('journals', 'content_manual', "TEXT NOT NULL DEFAULT ''");
 addCol('journals', 'route_json', "TEXT NOT NULL DEFAULT ''");
+// v1.10.0：注册（邮箱）+ 生成配额 + 用量记账。users 表此前从没加过列，这组是第一次。
+//  配额语义：-1=跟随系统默认（settings 的 quota_default_*）/ -2=不限 / >=0=指定总额；已用只增不减（管理员可清零）。
+addCol('users', 'email', "TEXT NOT NULL DEFAULT ''");
+addCol('users', 'quota_guide', 'INTEGER NOT NULL DEFAULT -1');
+addCol('users', 'quota_journal', 'INTEGER NOT NULL DEFAULT -1');
+addCol('users', 'guide_used', 'INTEGER NOT NULL DEFAULT 0');
+addCol('users', 'journal_used', 'INTEGER NOT NULL DEFAULT 0');
+addCol('users', 'tokens_in', 'INTEGER NOT NULL DEFAULT 0');
+addCol('users', 'tokens_out', 'INTEGER NOT NULL DEFAULT 0');
 
 // ---------- settings 读写 ----------
 function getSetting(key) {
@@ -738,6 +769,10 @@ function seedIfEmpty() {
   if (cityCount === 0) {
     const ins = db.prepare('INSERT INTO cities(name,province,adcode,lng,lat,hot) VALUES(?,?,?,?,?,?)');
     for (const [name, province, adcode, lng, lat, hot] of SEED_CITIES) ins.run(name, province, adcode, lng, lat, hot);
+    // v1.10.0：只有全新库才写默认配额。老库升级刻意不写——「未设置」按不限算，
+    // 否则一升级所有人（含已在用的普通用户）立刻被 0 次卡死。
+    setSetting('quota_default_guide', '3');
+    setSetting('quota_default_journal', '3');
   }
   const attrCount = db.prepare('SELECT COUNT(*) c FROM attractions').get().c;
   if (attrCount === 0) {

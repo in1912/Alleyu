@@ -1,13 +1,14 @@
 <template>
   <div class="home-page">
-    <!-- v1.8.0：右上角登录/退出（游客也能看首页，登录后才进得了功能） -->
+    <!-- v1.8.0：右上角登录/退出（游客也能看首页，登录后才进得了功能）；v1.10.0 旁边加注册 -->
     <div class="corner">
-      <template v-if="me">
-        <span class="who">{{ me.display_name || me.username }}</span>
+      <template v-if="session.me">
+        <span class="who">{{ session.me.display_name || session.me.username }}</span>
         <button class="btn ghost sm" @click="logout">退出</button>
       </template>
       <template v-else>
         <span class="who hint">游客模式 · 仅可浏览</span>
+        <button class="btn ghost sm" @click="goRegister">注册</button>
         <button class="btn sm" @click="needLogin">登录</button>
       </template>
     </div>
@@ -37,15 +38,14 @@
         </div>
       </div>
 
-      <div v-if="me && hotCities.length" class="hot-cities">
+      <div v-if="session.me && hotCities.length" class="hot-cities">
         <span v-for="c in hotCities" :key="c.id" class="c" @click="pick(c)">{{ c.name }}</span>
       </div>
 
-      <div class="quick-links" v-if="me">
-        <a href="#/plan">🧭 生成攻略</a><a href="#/history">📚 我的攻略</a>
-        <a href="#/journals">📖 游记整理</a><a href="#/library">🗺️ 城市景点库</a>
-        <a href="#/weather">🌤️ 天气</a><a href="#/settings">⚙️ 设置</a>
-        <a v-if="me.role === 'admin'" href="#/users">👥 用户管理</a>
+      <!-- v1.10.0：入口按角色过滤——普通用户看不到 城市景点库/设置/用户管理（服务端也 403），
+           多了「我的账号」（改昵称密码、看剩余次数）。判据与侧栏同一份 navVisible。 -->
+      <div class="quick-links" v-if="session.me">
+        <a v-for="l in quickLinks" :key="l.href" :href="l.href">{{ l.label }}</a>
       </div>
       <p v-else class="hint" style="margin-top: 26px">
         游客可以看首页；<a href="#/login" style="color: var(--acc-d)">登录</a> 后可以生成 AI 攻略、写游记、看地图与天气。
@@ -55,9 +55,10 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import RiderScene from '../components/RiderScene.vue';
 import { api, setToken, token } from '../api/index.js';
+import { session, loadMe, clearSession, navVisible } from '../stores/session.js';
 
 const riderRef = ref(null);
 const inputRef = ref(null);
@@ -65,8 +66,19 @@ const q = ref('');
 const showSug = ref(false);
 const suggestions = ref([]);
 const hotCities = ref([]);
-const me = ref(null);
 let sugTimer = 0;
+
+const LINKS = [
+  { href: '#/plan', label: '🧭 生成攻略', page: 'guides' },
+  { href: '#/history', label: '📚 我的攻略', page: 'guides' },
+  { href: '#/journals', label: '📖 游记整理', page: 'guides' },
+  { href: '#/library', label: '🗺️ 城市景点库', page: 'library', adminOnly: true },
+  { href: '#/weather', label: '🌤️ 天气', page: 'weather' },
+  { href: '#/account', label: '👤 我的账号', always: true },
+  { href: '#/settings', label: '⚙️ 设置', page: 'settings', adminOnly: true },
+  { href: '#/users', label: '👥 用户管理', page: 'settings', adminOnly: true },
+];
+const quickLinks = computed(() => LINKS.filter((l) => navVisible(l)));
 
 // 每敲进一个字符 → 兔跳一次（删除不触发）
 function onType(e) {
@@ -95,6 +107,9 @@ function pick(c) {
 function needLogin() {
   location.hash = '#/login';
 }
+function goRegister() {
+  location.hash = '#/register';
+}
 function goPlan() {
   if (!token()) return needLogin(); // 游客引导登录
   const kw = q.value.trim();
@@ -108,15 +123,16 @@ function goJournal() {
 async function logout() {
   try { await api('/auth/logout', { method: 'POST' }); } catch { /* 忽略 */ }
   setToken('');
-  me.value = null;
+  clearSession();
   hotCities.value = [];
 }
 onMounted(async () => {
   // v1.8.0：游客不再踢回登录页——首页就是门面；只有登录用户才拉用户信息与热门城市
   if (!token()) return;
   try {
-    const [m, c] = await Promise.all([api('/auth/me'), api('/cities')]);
-    me.value = m.user;
+    const me = await loadMe();
+    if (!me) return;
+    const c = await api('/cities');
     hotCities.value = (c.cities || []).filter((x) => x.hot).slice(0, 12);
   } catch { /* 401 已跳登录 */ }
 });

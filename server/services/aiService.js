@@ -66,7 +66,7 @@ async function testConnection(cfg) {
 // 流式对话：async generator，逐段 yield 文本增量。
 // ALLEYU_AI_STUB=1 是「无 Key 环境的兜底」而非强制覆盖：只要解析出了真实配置
 // （个人或全局），一律走真接口——否则用户配了 Key 仍出桩文案，纯属坑人。
-async function* streamChat(cfg, messages, { maxTokens = 8000, temperature = 0.5 } = {}) {
+async function* streamChat(cfg, messages, { maxTokens = 8000, temperature = 0.5, onUsage } = {}) {
   if (!cfg || cfg.source === 'stub') {
     yield* stubStream(messages);
     return;
@@ -75,10 +75,15 @@ async function* streamChat(cfg, messages, { maxTokens = 8000, temperature = 0.5 
   // thinking:{type:'disabled'}：deepseek-flash 等推理模型会把 max_tokens 全部吃进思考链
   // （实测 200/200 reasoning_tokens、finish=length、content 恒空——「空内容/北京 652 字」的根因），
   // 攻略是纯写作任务不需要思考链，显式关掉。绝大多数 OpenAI 兼容网关忽略未知字段。
+  // stream_options.include_usage：让服务商在最后一拍回 usage（v1.10.0 起用于累计 token 记账）。
+  // 不支持的网关会忽略该字段 —— 那就没有 usage，记账就什么都不写（见 usageService 的诚实边界）。
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.key}` },
-    body: JSON.stringify({ model: cfg.model, messages, max_tokens: maxTokens, temperature, stream: true, thinking: { type: 'disabled' } }),
+    body: JSON.stringify({
+      model: cfg.model, messages, max_tokens: maxTokens, temperature, stream: true,
+      thinking: { type: 'disabled' }, stream_options: { include_usage: true },
+    }),
     signal: AbortSignal.timeout(600000),
   });
   if (!res.ok) {
@@ -100,6 +105,8 @@ async function* streamChat(cfg, messages, { maxTokens = 8000, temperature = 0.5 
         const j = JSON.parse(payload);
         const delta = j.choices && j.choices[0] && j.choices[0].delta && j.choices[0].delta.content;
         if (delta) yield delta;
+        // usage 通常单独成一拍（choices 为空）。回调只报数，绝不把 usage 当正文。
+        if (j.usage && typeof onUsage === 'function') onUsage(j.usage);
       } catch { /* SSE 半行/心跳行，忽略 */ }
     }
   }

@@ -9,6 +9,13 @@ const { db } = require('../db');
 const ai = require('./aiService');
 const amap = require('./amapService');
 const { fitView } = require('./mapFit');
+const { consumeQuota } = require('../quota');
+const { recordUsage } = require('./usageService');
+
+// token 记账回调（v1.10.0）：桩模式与不回 usage 的网关都不记（诚实边界：不估算、不编造）
+function usageSink(userId, cfg) {
+  return (u) => { if (userId && cfg && cfg.source !== 'stub') recordUsage(userId, u); };
+}
 
 // ---------- 副标题（基础信息一行字：目的地·N天·人数·季节·出行方式） ----------
 function buildSubtitle(j) {
@@ -123,11 +130,11 @@ function stubTitle(j) {
 }
 
 // ---------- AI 小调用（配文/标题）：收齐流再回，短文本不值得落库直播 ----------
-async function aiText(messages, maxTokens = 300) {
+async function aiText(messages, maxTokens = 300, onUsage) {
   const cfg = ai.resolveConfig();
   if (!cfg || cfg.source === 'stub') return null; // 桩由调用方处理（要知道上下文）
   let out = '';
-  for await (const delta of ai.streamChat(cfg, messages, { maxTokens, temperature: 0.8 })) out += delta;
+  for await (const delta of ai.streamChat(cfg, messages, { maxTokens, temperature: 0.8, onUsage })) out += delta;
   return out.trim();
 }
 
@@ -160,7 +167,7 @@ async function run(journalId) {
       let lastFlush = 0;
       const gen = (!cfg || cfg.source === 'stub')
         ? stubJournalStream(messages)
-        : ai.streamChat(cfg, messages, { maxTokens: 8000, temperature: 0.7 });
+        : ai.streamChat(cfg, messages, { maxTokens: 8000, temperature: 0.7, onUsage: usageSink(j0.user_id, cfg) });
       for await (const delta of gen) {
         acc += delta;
         if (Date.now() - lastFlush > WRITE_THROTTLE_MS) {
@@ -178,7 +185,7 @@ async function run(journalId) {
       setStage(journalId, 'title');
       let t = '';
       if (cfg && cfg.source !== 'stub') {
-        try { t = await aiText(titleMessages(j0), 120); } catch { /* 标题失败不拦正文 */ }
+        try { t = await aiText(titleMessages(j0), 120, usageSink(j0.user_id, cfg)); } catch { /* 标题失败不拦正文 */ }
       }
       if (!t) t = stubTitle(j0);
       t = t.replace(/["「」《》\s]/g, '').slice(0, 20);
@@ -197,6 +204,8 @@ async function run(journalId) {
       content_original=CASE WHEN content_original='' THEN ? ELSE content_original END,
       updated_at=datetime('now','localtime') WHERE id=?`)
       .run(content, subtitle, cfg && cfg.model || 'stub', content, journalId);
+    // 只有真出成稿才扣次数（与攻略同规矩：失败/重试不扣）。下面 catch 落 error 的路径不经过这里。
+    consumeQuota(j0.user_id, 'journal');
   } catch (e) {
     db.prepare("UPDATE journals SET status='error', error=?, stage='', updated_at=datetime('now','localtime') WHERE id=?").run(e.message, journalId);
   }
@@ -302,4 +311,4 @@ async function* stubJournalStream(messages) {
 }
 
 // 导出 run（fire-and-forget 由路由触发）
-module.exports = { run, buildMessages, buildSubtitle, captionMessages, titleMessages, stubJournalText, stubCaption, stubTitle, aiText, buildRoute, lineKm };
+module.exports = { run, buildMessages, buildSubtitle, captionMessages, titleMessages, stubJournalText, stubCaption, stubTitle, aiText, usageSink, buildRoute, lineKm };

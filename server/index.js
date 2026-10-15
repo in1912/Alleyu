@@ -13,8 +13,12 @@ app.disable('x-powered-by');
 // 全局 parser 先跑，限太低会在到达 route 校验前就 413——journalRoutes 里的 40mb 解析器实际是兜底）
 app.use(express.json({ limit: '12mb' }));
 
-// 免登录通道（前缀匹配，相对 /api 挂载点的路径）：登录、健康检查、系统信息、图片直链（<img>/EventSource 带不了头）、分享公开读
-const EXEMPT = ['auth/login', 'health', 'system-info', 'amap/mapimg', 'amap/photo', 'share'];
+// 免登录通道（前缀匹配，相对 /api 挂载点的路径）：登录、注册、健康检查、系统信息、图片直链（<img>/EventSource 带不了头）、分享公开读
+// 注意 'auth/register' 必须写全：写成 'auth' 会把 logout/me/password 一起放行，
+// 那些 handler 直接用 req.user（EXEMPT 分支没赋值）→ 500 或静默越权。
+// 'auth/register-open' 也要单独写：前缀匹配只认 `pre` 本身和 `pre + '/'`，
+// 所以 'auth/register' **不会**顺带放行 register-open（自检抓到的真 bug：注册页拿不到 open 状态，恒 401）。
+const EXEMPT = ['auth/login', 'auth/register', 'auth/register-open', 'health', 'system-info', 'amap/mapimg', 'amap/photo', 'share'];
 
 // /api/system-info 挂在根上（免登录的版本探针）
 app.get('/api/system-info', require('./routes/settingsRoutes').systemInfo);
@@ -36,6 +40,7 @@ app.use('/api', (req, res, next) => {
 // 路由挂载（需登录；顺序无讲究，路径不重叠）
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/users', require('./routes/userRoutes'));
+app.use('/api/invites', require('./routes/inviteRoutes')); // v1.10.0 邀请码（router 内再做一次 admin 闸）
 app.use('/api/ai', require('./routes/aiRoutes'));
 app.use('/api', require('./routes/cityRoutes'));      // /api/cities /api/attractions /api/poi /api/import-poi
 app.use('/api/guides', require('./routes/guideRoutes'));

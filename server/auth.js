@@ -34,7 +34,8 @@ function resolveUser(req) {
   for (const token of candidates) {
     if (!token) continue;
     const row = db.prepare(
-      `SELECT u.id, u.username, u.role, u.display_name, u.allowed_pages, u.allowed_tabs, u.can_use_ai
+      `SELECT u.id, u.username, u.role, u.display_name, u.allowed_pages, u.allowed_tabs, u.can_use_ai,
+              u.email, u.quota_guide, u.quota_journal, u.guide_used, u.journal_used, u.tokens_in, u.tokens_out
        FROM sessions s JOIN users u ON u.id=s.user_id
        WHERE s.token=? AND s.expires_at > datetime('now','localtime')`
     ).get(token);
@@ -57,14 +58,20 @@ function cleanupSessions() {
 }
 
 // ---------- 页权限 ----------
-// 页 key → 侧栏入口。攻略生成另有 can_use_ai 闸（路由内检查，admin 恒可用）。
-const PAGES = ['guides', 'library', 'weather', 'settings'];
+// 页 key → 侧栏入口。攻略生成另有 can_use_ai 与配额两道闸（路由内检查，admin 恒可用）。
+// v1.10.0：可分配给普通用户的页只剩 guides / weather —— library 与 settings 变成管理员专属，
+// 由 canAccess 硬性拒绝（用户要求：非管理员看不到 用户管理/设置/城市景点库）。
+const PAGES = ['guides', 'weather'];
+// 依赖 /api/cities、/api/attractions 的读通道：攻略表单的目的地联想、游记向导的「边录边搜」、
+// 天气页城市查询。这些是系统内置数据，写操作在 cityRoutes 里各有行内 admin 闸门，
+// 所以这一组只要求登录（返回 null），不再挂 library 页 —— 否则普通用户只有 guides 页时会 403。
+const CITY_READ_PREFIXES = ['/cities', '/attractions', '/poi', '/import-poi'];
 
 function pageForPath(p) {
   if (p.startsWith('/guides') || p.startsWith('/guide') || p.startsWith('/plan') || p.startsWith('/history') || p.startsWith('/journals') || p.startsWith('/journal')) return 'guides';
-  if (p.startsWith('/cities') || p.startsWith('/attractions') || p.startsWith('/library') || p.startsWith('/poi') || p.startsWith('/import-poi')) return 'library';
+  if (CITY_READ_PREFIXES.some((pre) => p.startsWith(pre))) return null; // 登录即可（页面可见性在前端收口）
   if (p.startsWith('/weather')) return 'weather';
-  if (p.startsWith('/ai') || p.startsWith('/users') || p.startsWith('/settings')) return 'settings';
+  if (p.startsWith('/ai') || p.startsWith('/users') || p.startsWith('/settings') || p.startsWith('/invites')) return 'settings';
   return null; // /amap 共享通道（登录即可）：图片代理给 <img> 直链用
 }
 
@@ -73,6 +80,7 @@ const TAB_PATHS = {
   settings: [
     ['ai', ['/ai', '/settings']],
     ['users', ['/users']],
+    ['invite', ['/invites']],
   ],
 };
 
@@ -91,15 +99,18 @@ function canAccess(user, page, tab) {
   if (!user) return false;
   if (user.role === 'admin') return true;
   if (!page) return true;
-  const allowed = user.allowed_pages || [];
-  if (Array.isArray(allowed) && allowed.length > 0) {
-    if (!allowed.includes(page)) return false;
-    if (tab) {
-      const tabs = user.allowed_tabs || {};
-      if (tabs && typeof tabs === 'object' && page in tabs) {
-        const list = tabs[page];
-        if (Array.isArray(list) && !list.includes(tab)) return false;
-      }
+  // v1.10.0：设置（含用户管理/AI 配置/邀请码）是管理员页，白名单里写了也不放行
+  if (page === 'settings') return false;
+  const allowed = user.allowed_pages;
+  // 非管理员「空白名单」= 攻略 + 天气（旧语义是「全放行」——v1.10.0 起收口，
+  // 否则老库里的 allowed_pages='[]' 用户仍能读设置，与需求 6 冲突）
+  if (!Array.isArray(allowed) || allowed.length === 0) return page === 'guides' || page === 'weather';
+  if (!allowed.includes(page)) return false;
+  if (tab) {
+    const tabs = user.allowed_tabs || {};
+    if (tabs && typeof tabs === 'object' && page in tabs) {
+      const list = tabs[page];
+      if (Array.isArray(list) && !list.includes(tab)) return false;
     }
   }
   return true;

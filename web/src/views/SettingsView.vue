@@ -2,13 +2,13 @@
   <div>
     <h2 style="margin: 0 0 14px">⚙️ 设置</h2>
     <div class="tabs">
-      <div v-if="isAdmin" class="t" :class="{ on: tab === 'global' }" @click="tab = 'global'">AI 全局配置（管理员）</div>
-      <div class="t" :class="{ on: tab === 'pwd' }" @click="tab = 'pwd'">修改密码</div>
-      <div v-if="isAdmin" class="t" :class="{ on: tab === 'sys' }" @click="tab = 'sys'">系统</div>
+      <div class="t" :class="{ on: tab === 'global' }" @click="tab = 'global'">AI 全局配置</div>
+      <div class="t" :class="{ on: tab === 'invite' }" @click="tab = 'invite'">邀请码</div>
+      <div class="t" :class="{ on: tab === 'sys' }" @click="tab = 'sys'">系统</div>
     </div>
 
-    <!-- AI 全局（admin，v1.6.0 起全站唯一一份 Key） -->
-    <div v-if="tab === 'global' && isAdmin" class="card">
+    <!-- AI 全局（admin，v1.6.0 起全站唯一一份 Key）。v1.10.0：本页整页仅管理员可达 -->
+    <div v-if="tab === 'global'" class="card">
       <p class="hint" style="margin-top: 0">
         全站共用这一份 AI Key（v1.6.0 起个人配置已下线）：开通「允许使用 AI」的用户都用它生成攻略。
         兼容 OpenAI 接口格式（/v1/chat/completions），填基地址即可，例如 https://api.xxx.com 或 https://api.xxx.com/v1。
@@ -47,24 +47,57 @@
         {{ amapMsg }}
       </p>
       <p class="hint">注意：必须是「Web服务」类型的 Key，「Web端(JS API)」类型调不了 REST 接口（会报 10009）。测试连通会给出具体原因。</p>
-      <p class="hint">用户级授权在「用户管理」里按人勾选「允许使用 AI」。</p>
+      <p class="hint">用户级授权与生成次数在「用户管理」里按人设置。</p>
     </div>
 
-    <!-- 密码 -->
-    <div v-if="tab === 'pwd'" class="card" style="max-width: 460px">
-      <label class="fld">原密码</label>
-      <input v-model="pwd.old" type="password" class="input" autocomplete="current-password" />
-      <label class="fld" style="margin-top: 10px">新密码（≥6 位）</label>
-      <input v-model="pwd.neu" type="password" class="input" autocomplete="new-password" />
-      <div style="margin-top: 14px; display: flex; gap: 10px; align-items: center">
-        <button class="btn" @click="savePwd">修改密码</button>
-        <span v-if="pwdMsg" :class="pwdOk ? 'ok-text' : 'err-text'" style="margin: 0">{{ pwdMsg }}</span>
+    <!-- 邀请码（v1.10.0）：注册的唯一入口凭证。可设使用次数、可备注、可一次性、可停用 -->
+    <div v-if="tab === 'invite'" class="card">
+      <p class="hint" style="margin-top: 0">
+        注册必须凭邀请码。可生成一次性码（使用次数 1）或多人共用的码；
+        已用过的码建议「停用」而不是删除（保留谁邀请了谁的线索）；库里没有任何可用码时，
+        注册页会直接显示「当前未开放注册」。
+      </p>
+      <div class="grid3">
+        <div><label class="fld">生成个数</label><input v-model.number="ng.count" type="number" min="1" max="50" class="input" /></div>
+        <div><label class="fld">每个可用次数</label><input v-model.number="ng.maxUses" type="number" min="1" max="9999" class="input" /></div>
+        <div><label class="fld">备注（谁用/用途）</label><input v-model="ng.note" class="input" placeholder="例如：给老王 / 部门同事" /></div>
       </div>
+      <div style="display: flex; gap: 10px; margin-top: 14px; align-items: center">
+        <button class="btn" :disabled="ngBusy" @click="makeInvites">{{ ngBusy ? '生成中…' : '生成邀请码' }}</button>
+        <button class="btn ghost" @click="ng.maxUses = 1">一次性码</button>
+        <span v-if="ngMsg" :class="ngOk ? 'ok-text' : 'err-text'" style="margin: 0">{{ ngMsg }}</span>
+      </div>
+
+      <table class="tb" style="margin-top: 16px">
+        <thead><tr><th>邀请码</th><th>使用次数</th><th>已用</th><th>备注</th><th>状态</th><th>生成时间</th><th>操作</th></tr></thead>
+        <tbody>
+          <tr v-for="c in invites" :key="c.id">
+            <td>
+              <b style="letter-spacing: 1px">{{ c.code }}</b>
+              <button class="btn ghost sm" style="margin-left: 6px" @click="copy(c.code)">复制</button>
+            </td>
+            <td>{{ c.max_uses === 1 ? '一次性' : c.max_uses + ' 次' }}</td>
+            <td>{{ c.used_count }} / {{ c.max_uses }}</td>
+            <td class="hint">{{ c.note || '—' }}</td>
+            <td>
+              <span class="badge" :class="c.enabled && c.used_count < c.max_uses ? 'blue' : 'gray'">
+                {{ !c.enabled ? '已停用' : (c.used_count >= c.max_uses ? '已用完' : '可用') }}
+              </span>
+            </td>
+            <td class="hint">{{ c.created_at }}</td>
+            <td>
+              <button class="btn ghost sm" @click="toggleInvite(c)">{{ c.enabled ? '停用' : '启用' }}</button>
+              <button class="btn ghost sm" style="margin-left: 6px" @click="delInvite(c)">删除</button>
+            </td>
+          </tr>
+          <tr v-if="!invites.length"><td colspan="7" class="hint">还没有邀请码 —— 生成一个才能让别人注册</td></tr>
+        </tbody>
+      </table>
     </div>
 
-    <!-- 系统 -->
-    <div v-if="tab === 'sys' && isAdmin && sys" class="card">
-      <table class="tb" style="max-width: 480px">
+    <!-- 系统：版本信息 + 系统默认生成次数 -->
+    <div v-if="tab === 'sys'" class="card">
+      <table class="tb" style="max-width: 520px" v-if="sys">
         <tbody>
           <tr><td>名称 / 版本</td><td><b>{{ sys.name }}</b> v{{ sys.version }}</td></tr>
           <tr><td>Node</td><td>{{ sys.node }}（{{ sys.platform }}）</td></tr>
@@ -73,26 +106,89 @@
           <tr><td>AI 通道</td><td>{{ sys.stub_ai ? 'ALLEYU_AI_STUB=1（未配置 Key 时本地桩兜底，配了 Key 一律走真接口）' : '真实接口' }}</td></tr>
         </tbody>
       </table>
+
+      <hr style="border: none; border-top: 1px solid var(--line); margin: 18px 0" />
+      <h3 style="margin-top: 0">系统默认生成次数</h3>
+      <p class="hint" style="margin-top: 0">
+        新用户、以及把次数设成「跟随默认」的用户按这里的值算。<b>留空 = 不限</b>；
+        累计总额、用光为止（不做每月重置）。只有真的生成成功才扣一次，失败/重试不扣。
+        单独给某人加次数或设成不限，在「用户管理」里改。
+      </p>
+      <div class="grid2" style="max-width: 520px">
+        <div><label class="fld">攻略次数（留空 = 不限）</label><input v-model="q.guide" class="input" placeholder="例如 3；留空不限" /></div>
+        <div><label class="fld">游记次数（留空 = 不限）</label><input v-model="q.journal" class="input" placeholder="例如 3；留空不限" /></div>
+      </div>
+      <div style="display: flex; gap: 10px; margin-top: 14px; align-items: center">
+        <button class="btn" @click="saveQuota">保存默认次数</button>
+        <span v-if="qMsg" :class="qOk ? 'ok-text' : 'err-text'" style="margin: 0">{{ qMsg }}</span>
+      </div>
+      <p class="hint" style="margin-bottom: 0">管理员账号不受次数限制，但用量（token）照样统计。</p>
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue';
+import { onMounted, reactive, ref } from 'vue';
 import { api } from '../api/index.js';
 
-const me = ref(null);
-const isAdmin = computed(() => me.value?.role === 'admin');
-const tab = ref('pwd');
+const tab = ref('global');
 
 const g = reactive({ baseUrl: '', model: '', key: '', has_key: false, amapSet: false, amapKey: '' });
-const pwd = reactive({ old: '', neu: '' });
-
 const gMsg = ref(''); const gOk = ref(false);
-const pwdMsg = ref(''); const pwdOk = ref(false);
 const amapMsg = ref(''); const amapOk = ref(false);
 const testModels = ref([]);
 const sys = ref(null);
+
+// 邀请码
+const invites = ref([]);
+const ng = reactive({ count: 1, maxUses: 1, note: '' });
+const ngMsg = ref(''); const ngOk = ref(false); const ngBusy = ref(false);
+
+// 系统默认次数
+const q = reactive({ guide: '', journal: '' });
+const qMsg = ref(''); const qOk = ref(false);
+
+async function loadInvites() {
+  const j = await api('/invites');
+  invites.value = j.invites || [];
+}
+async function makeInvites() {
+  ngMsg.value = '';
+  ngBusy.value = true;
+  try {
+    const j = await api('/invites', { method: 'POST', body: { count: ng.count, max_uses: ng.maxUses, note: ng.note } });
+    ngOk.value = true;
+    ngMsg.value = `已生成 ${j.codes.length} 个：${j.codes.join('、')}`;
+    ng.note = '';
+    await loadInvites();
+  } catch (e) { ngOk.value = false; ngMsg.value = e.message; } finally { ngBusy.value = false; }
+}
+async function toggleInvite(c) {
+  try {
+    await api(`/invites/${c.id}`, { method: 'PUT', body: { enabled: !c.enabled } });
+    await loadInvites();
+  } catch (e) { alert(e.message); }
+}
+async function delInvite(c) {
+  if (!confirm(`删除邀请码 ${c.code}？${c.used_count > 0 ? '（已被用过，建议改用「停用」保留线索）' : ''}`)) return;
+  try {
+    await api(`/invites/${c.id}`, { method: 'DELETE' });
+    await loadInvites();
+  } catch (e) { alert(e.message); }
+}
+function copy(code) {
+  navigator.clipboard?.writeText(code).then(
+    () => { ngOk.value = true; ngMsg.value = `已复制 ${code}`; },
+    () => { ngOk.value = false; ngMsg.value = '复制失败，请手动选中'; },
+  );
+}
+async function saveQuota() {
+  qMsg.value = '';
+  try {
+    await api('/settings', { method: 'PUT', body: { quota_default_guide: q.guide, quota_default_journal: q.journal } });
+    qOk.value = true; qMsg.value = '已保存（对新用户与「跟随默认」的用户立即生效）';
+  } catch (e) { qOk.value = false; qMsg.value = e.message; }
+}
 
 async function testG() {
   gMsg.value = ''; testModels.value = [];
@@ -138,23 +234,20 @@ async function resetAmap() {
     amapOk.value = true; amapMsg.value = '高德 Key 已清空，请到 lbs.amap.com 申请自己的 Key 后在上方填入';
   } catch (e) { amapOk.value = false; amapMsg.value = e.message; }
 }
-async function savePwd() {
-  pwdMsg.value = '';
-  try {
-    await api('/auth/password', { method: 'POST', body: { oldPassword: pwd.old, newPassword: pwd.neu } });
-    pwdOk.value = true; pwdMsg.value = '密码已修改';
-    pwd.old = ''; pwd.neu = '';
-  } catch (e) { pwdOk.value = false; pwdMsg.value = e.message; }
-}
+
 onMounted(async () => {
-  me.value = (await api('/auth/me')).user;
-  if (isAdmin.value) {
-    tab.value = 'global';
-    const gc = await api('/ai/global');
-    g.baseUrl = gc.base_url; g.model = gc.model; g.has_key = gc.has_key;
-    const st = await api('/settings');
-    g.amapSet = !!st.amap_key_set;
-    sys.value = await api('/system-info');
-  }
+  const gc = await api('/ai/global');
+  g.baseUrl = gc.base_url; g.model = gc.model; g.has_key = gc.has_key;
+  const st = await api('/settings');
+  g.amapSet = !!st.amap_key_set;
+  q.guide = st.quota_default_guide || '';
+  q.journal = st.quota_default_journal || '';
+  sys.value = await api('/system-info');
+  await loadInvites();
 });
 </script>
+
+<style scoped>
+.grid3 { display: grid; grid-template-columns: 1fr 1fr 1.4fr; gap: 12px; }
+@media (max-width: 760px) { .grid3 { grid-template-columns: 1fr; } }
+</style>

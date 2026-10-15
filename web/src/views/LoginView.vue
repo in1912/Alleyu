@@ -21,6 +21,8 @@
           <button class="btn" style="width: 100%; margin-top: 16px" :disabled="busy" @click="doLogin">
             {{ busy ? '登录中…' : '登录' }}
           </button>
+          <!-- v1.10.0：登录按钮正下方给注册入口（需要邀请码，注册页会自己说清） -->
+          <button class="btn ghost" style="width: 100%; margin-top: 10px" @click="goRegister">没有账号？注册</button>
           <p class="hint" style="margin-top: 12px">
             <a href="#/" style="color: var(--mut)">← 先逛逛首页（游客模式）</a>
           </p>
@@ -34,12 +36,16 @@
 import { ref } from 'vue';
 import RiderScene from '../components/RiderScene.vue';
 import { api, setToken } from '../api/index.js';
+import { setSession } from '../stores/session.js';
 
 const username = ref('');
 const password = ref('');
 const err = ref('');
 const busy = ref(false);
 
+function goRegister() {
+  location.hash = '#/register';
+}
 async function doLogin() {
   if (!username.value || !password.value) { err.value = '请输入用户名和密码'; return; }
   busy.value = true;
@@ -47,6 +53,7 @@ async function doLogin() {
   try {
     const j = await api('/auth/login', { method: 'POST', body: { username: username.value, password: password.value } });
     setToken(j.token);
+    setSession(j.user); // 共享缓存里立刻有角色，路由守卫不用再等一次 /auth/me
     location.hash = '#/'; // 登录后回兔子首页（写攻略/写游记都从首页进）
   } catch (e) {
     err.value = e.message;

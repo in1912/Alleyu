@@ -118,13 +118,15 @@
         </div>
       </div>
 
-      <div style="display: flex; align-items: center; gap: 14px; margin-top: 20px">
-        <button class="btn" :disabled="busy" @click="submit">{{ busy ? '创建中…' : '生成攻略 ✨' }}</button>
-        <span v-if="aiStatus && !aiStatus.can_use_ai" class="err-text">管理员未给你开通 AI 使用权限</span>
-        <span v-else-if="aiStatus && aiStatus.effective_source === 'none'" class="err-text">尚无可用 AI 配置（设置页可填自己的 Key）</span>
-        <span v-else-if="aiStatus" class="hint">
-          AI 通道：{{ aiStatus.effective_source === 'personal' ? '自己的 Key' : aiStatus.effective_source === 'global' ? '管理员全局 Key' : '—' }}
+      <div style="display: flex; align-items: center; gap: 14px; margin-top: 20px; flex-wrap: wrap">
+        <button class="btn" :disabled="busy || quotaOut" @click="submit">{{ busy ? '创建中…' : '生成攻略 ✨' }}</button>
+        <!-- v1.10.0：把剩余次数摆在按钮边上（用完了按钮置灰并说清找谁） -->
+        <span v-if="quotaOut" class="err-text">攻略生成次数已用完（共 {{ quota.limit }} 次），请联系管理员增加</span>
+        <span v-else-if="quota" class="hint">
+          攻略剩余：<b>{{ quota.unlimited ? '不限' : quota.left + ' 次' }}</b>
+          <span v-if="!quota.unlimited">（共 {{ quota.limit }} 次，已用 {{ quota.used }}）</span>
         </span>
+        <span v-if="aiMsg" class="err-text">{{ aiMsg }}</span>
       </div>
       <p v-if="err" class="err-text">{{ err }}</p>
     </div>
@@ -132,7 +134,7 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { api } from '../api/index.js';
 
@@ -158,6 +160,10 @@ const avoidCustom = ref('');
 const busy = ref(false);
 const err = ref('');
 const aiStatus = ref(null);
+// v1.10.0 生成配额：来自 /auth/me 的 quota.guide（管理员 unlimited）
+const quota = ref(null);
+const aiMsg = ref('');
+const quotaOut = computed(() => !!quota.value && !quota.value.unlimited && quota.value.left <= 0);
 let sugTimer = 0;
 let poiTimer = 0;
 
@@ -247,6 +253,12 @@ onMounted(async () => {
     await loadAttractions();
   }
   try { aiStatus.value = await api('/ai/status'); } catch { /* 忽略 */ }
+  try {
+    const m = await api('/auth/me');
+    quota.value = (m.user && m.user.quota && m.user.quota.guide) || null;
+    if (m.user && !m.user.can_use_ai && m.user.role !== 'admin') aiMsg.value = '管理员未给你开通 AI 使用权限';
+    else if (aiStatus.value && aiStatus.value.effective_source === 'none') aiMsg.value = '尚无可用 AI 配置：请管理员在「设置 → AI 全局配置」填写接口与 Key';
+  } catch { /* 401 已跳登录 */ }
 });
 </script>
 

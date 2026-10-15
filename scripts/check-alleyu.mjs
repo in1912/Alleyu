@@ -115,8 +115,13 @@ try {
   // 页面权限白名单
   r = await req(`/api/users/${u1id}`, { method: 'PUT', token: admin, body: { allowed_pages: ['guides'] } });
   ok(r.status === 200 && r.j.user.allowed_pages.includes('guides'), 'admin 收窄 u1 页权限为 [guides]');
+  // v1.10.0 语义变更：城市/景点库的**只读** API 不再挂 library 页（library 已废，页面级管理员专属），
+  // 因为攻略表单的目的地联想、游记向导的「边录边搜」都要用它，而普通用户只有 guides 页。
+  // 写操作仍有行内 admin 闸门（下面 :133/:136 那组断言就是护栏）。设置/用户管理才是硬拒的。
   r = await req('/api/cities', { token: u1 });
-  ok(r.status === 403, 'u1 被收回 library 页 → /cities 403');
+  ok(r.status === 200, 'v1.10.0：景点库只读 API 对登录用户开放（攻略/游记表单依赖）');
+  r = await req('/api/settings', { token: u1 });
+  ok(r.status === 403, 'u1 被收窄后访问设置页 403（非管理员硬拒）');
   r = await req('/api/guides', { token: u1 });
   ok(r.status === 200, 'u1 仍有 guides 页');
 
@@ -219,8 +224,11 @@ try {
   // 个人配置端点已删（v1.6.0）：全部 404
   r = await req('/api/ai/config', { method: 'PUT', token: admin, body: { base_url: 'https://personal.example.com/v1', model: 'my-model', key: 'sk-personal-test' } });
   ok(r.status === 404, '个人配置 PUT 已下线（404）');
-  r = await req('/api/ai/config', { token: u1 });
+  r = await req('/api/ai/config', { method: 'GET', token: admin });
   ok(r.status === 404, '个人配置 GET 已下线（404）');
+  // v1.10.0：/ai/* 属设置页，非管理员在全局中间件就被 403（个人配置早已下线，这里是权限收口的证据）
+  r = await req('/api/ai/config', { token: u1 });
+  ok(r.status === 403, 'v1.10.0：普通用户连 /ai/* 都进不来（设置页收口）');
   r = await req('/api/ai/test', { method: 'POST', token: admin, body: {} });
   ok(r.status === 404, '个人配置 /ai/test 已下线（404）');
   r = await req('/api/ai/status', { token: admin });
@@ -253,7 +261,9 @@ try {
 
   // ---- 攻略生成（桩） ----
   console.log('== 攻略生成（桩 AI 全链路） ==');
-  await req(`/api/users/${u1id}`, { method: 'PUT', token: admin, body: { allowed_pages: [], can_use_ai: true } });
+  // u1 全程给「不限次数」（-2）：本套件前面后面要为别的事生成十几篇，撞上默认 3 次会连锁失败；
+  // 配额本身的行为由专门的「生成配额」组用一个新注册用户验证。
+  await req(`/api/users/${u1id}`, { method: 'PUT', token: admin, body: { allowed_pages: [], can_use_ai: true, quota_guide: -2, quota_journal: -2 } });
   r = await req('/api/guides', { method: 'POST', token: u1, body: { destination: '杭州', days: 3, mustVisits: ['西湖', '灵隐寺'], month: '10', group: '家庭' } });
   ok(r.status === 200 && r.j.id, '开通权限后 u1 创建攻略');
   const gid = r.j.id;
@@ -808,6 +818,259 @@ try {
   ok(r.status === 200, '删除游记');
   r = await req(`/api/journals/${jid}/photos/${pid1}/file?token=${encodeURIComponent(u1)}`);
   ok(r.status === 404, '删除后照片直链 404');
+
+  // ---- v1.10.0：邀请码与自助注册 ----
+  console.log('== 邀请码与注册（v1.10.0） ==');
+  r = await req('/api/invites', { method: 'POST', token: admin, body: { count: 1, max_uses: 1, note: '一次性-自检' } });
+  ok(r.status === 200 && r.j.codes.length === 1 && /^[A-Z2-9]{8}$/.test(r.j.codes[0]), 'admin 生成一次性邀请码（8 位，去易混字符）');
+  const onceCode = r.j.codes[0];
+  ok(r.j.invites[0].max_uses === 1 && r.j.invites[0].used_count === 0 && r.j.invites[0].note === '一次性-自检' && r.j.invites[0].enabled === true,
+    '邀请码回包带 使用次数/已用/备注/启用 四项');
+  r = await req('/api/invites', { method: 'POST', token: admin, body: { count: 1, max_uses: 3, note: '三次码' } });
+  const multiCode = r.j.codes[0];
+  ok(r.j.invites[0].max_uses === 3, '可重复使用的邀请码（3 次）');
+  r = await req('/api/invites', { method: 'POST', token: admin, body: { count: 2, max_uses: 5 } });
+  ok(r.status === 200 && r.j.codes.length === 2 && new Set(r.j.codes).size === 2, '批量生成 2 个码且互不重复');
+  r = await req('/api/invites', { method: 'POST', token: admin, body: { max_uses: 0 } });
+  ok(r.status === 400, '使用次数 0 → 400（最小 1 = 一次性）');
+  r = await req('/api/invites', { token: u1 });
+  ok(r.status === 403, '普通用户读邀请码列表 403');
+  r = await req('/api/invites', { method: 'POST', token: u1, body: { max_uses: 1 } });
+  ok(r.status === 403, '普通用户生成邀请码 403');
+  r = await req('/api/auth/register-open');
+  ok(r.status === 200 && r.j.open === true, 'register-open 免登录可读，有可用码时 open=true');
+
+  // 注册校验：五项全必填（用户定调），逐项给 400
+  const goodReg = { username: 'reg_user_1', password: 'regpass123', email: 'reg1@example.com', display_name: '注册用户一', invite_code: onceCode };
+  r = await req('/api/auth/register', { method: 'POST', body: { ...goodReg, username: '' } });
+  ok(r.status === 400, '注册缺用户名 400');
+  r = await req('/api/auth/register', { method: 'POST', body: { ...goodReg, username: 'a b' } });
+  ok(r.status === 400 && /用户名/.test(r.j.error || ''), '用户名非法字符 400');
+  r = await req('/api/auth/register', { method: 'POST', body: { ...goodReg, password: '123' } });
+  ok(r.status === 400 && /密码/.test(r.j.error || ''), '注册密码太短 400');
+  r = await req('/api/auth/register', { method: 'POST', body: { ...goodReg, email: 'not-an-email' } });
+  ok(r.status === 400 && /邮箱/.test(r.j.error || ''), '注册邮箱格式错 400');
+  r = await req('/api/auth/register', { method: 'POST', body: { ...goodReg, display_name: '' } });
+  ok(r.status === 400 && /昵称/.test(r.j.error || ''), '注册缺昵称 400');
+  r = await req('/api/auth/register', { method: 'POST', body: { ...goodReg, invite_code: '' } });
+  ok(r.status === 400 && /邀请码/.test(r.j.error || ''), '注册缺邀请码 400');
+  r = await req('/api/auth/register', { method: 'POST', body: { ...goodReg, invite_code: 'ZZZZZZZZ' } });
+  ok(r.status === 400 && /无效|停用/.test(r.j.error || ''), '不存在的邀请码 400');
+  r = await req('/api/auth/register', { method: 'POST', body: { ...goodReg, invite_code: onceCode.toLowerCase() } });
+  ok(r.status === 200 && r.j.token && r.j.user.role === 'user', '邀请码大小写不敏感 + 注册即登录（回 token）');
+  const regU = r.j.token;
+  const regUid = r.j.user.id;
+  ok(r.j.user.username === 'reg_user_1' && r.j.user.display_name === '注册用户一' && r.j.user.email === 'reg1@example.com', '注册资料原样落库（用户名/昵称/邮箱）');
+  ok(Array.isArray(r.j.user.allowed_pages) && r.j.user.allowed_pages.includes('guides') && r.j.user.allowed_pages.includes('weather') && r.j.user.can_use_ai === true,
+    '新用户默认能用攻略+游记（can_use_ai=1）');
+  ok(r.j.user.quota && r.j.user.quota.guide && typeof r.j.user.quota.guide.left === 'number', '/auth/me 带配额快照（生成页显示剩余次数用）');
+  r = await req('/api/auth/login', { method: 'POST', body: { username: 'reg_user_1', password: 'regpass123' } });
+  ok(r.status === 200 && r.j.token, '注册出来的账号能正常登录');
+  // 注意：换一个用户名/邮箱——否则先撞「用户名已存在」，测不到码的语义
+  r = await req('/api/auth/register', { method: 'POST', body: { ...goodReg, username: 'reg_once2', email: 'reg_once2@example.com' } });
+  ok(r.status === 400 && /用完/.test(r.j.error || ''), '一次性码用过即废（同码再注册 400）');
+  r = await req('/api/auth/register', { method: 'POST', body: { ...goodReg, username: 'reg_user_2', email: 'reg2@example.com', invite_code: 'ZZZZZZZZ' } });
+  ok(r.status === 400 && /无效/.test(r.j.error || ''), '换个用户名用错码照样 400（码不因用户名撞车而误判）');
+  r = await req('/api/auth/register', { method: 'POST', body: { ...goodReg, username: 'reg_user_1', email: 'other@example.com', invite_code: multiCode } });
+  ok(r.status === 400 && /用户名已存在/.test(r.j.error || ''), '重复用户名 400');
+  r = await req('/api/auth/register', { method: 'POST', body: { ...goodReg, username: 'reg_user_3', email: 'reg1@example.com', invite_code: multiCode } });
+  ok(r.status === 400 && /邮箱/.test(r.j.error || ''), '重复邮箱 400');
+  // 多次码：连用 3 次，第 4 次才拒
+  let multiOk = 0;
+  for (let i = 1; i <= 4; i++) {
+    const rr = await req('/api/auth/register', { method: 'POST', body: { username: `reg_m${i}`, password: 'regpass123', email: `regm${i}@example.com`, display_name: `多次码${i}`, invite_code: multiCode } });
+    if (rr.status === 200) multiOk++;
+  }
+  ok(multiOk === 3, '3 次码恰好可用 3 次（第 4 次被拒）', `成功 ${multiOk} 次`);
+  r = await req('/api/auth/register', { method: 'POST', body: { ...goodReg, username: 'reg_m9', email: 'regm9@example.com', invite_code: multiCode } });
+  ok(r.status === 400 && /用完/.test(r.j.error || ''), '用完的多次码明确回「已被用完」');
+  r = await req('/api/invites', { token: admin });
+  const usedMulti = (r.j.invites || []).find((x) => x.code === multiCode);
+  ok(usedMulti && usedMulti.used_count === 3, '列表如实显示已用 3 次（管理员看得到谁用了几次）');
+  // 停用 → 立刻不可注册
+  r = await req('/api/invites', { method: 'POST', token: admin, body: { count: 1, max_uses: 2, note: '待停用' } });
+  const offCode = r.j.codes[0];
+  const offId = r.j.invites[0].id;
+  r = await req('/api/invites', { method: 'PUT', token: admin, body: { enabled: false, note: '停用了' } });
+  ok(r.status === 404, 'PUT 邀请码缺 id 落到别的路径（404 兜底，不误改）');
+  r = await req(`/api/invites/${offId}`, { method: 'PUT', token: admin, body: { enabled: false, note: '停用了' } });
+  ok(r.status === 200 && r.j.invite.enabled === false && r.j.invite.note === '停用了', '停用邀请码 + 改备注');
+  r = await req('/api/auth/register', { method: 'POST', body: { username: 'reg_off', password: 'regpass123', email: 'regoff@example.com', display_name: '停用码', invite_code: offCode } });
+  ok(r.status === 400 && /无效|停用/.test(r.j.error || ''), '停用后的码注册 400');
+  r = await req(`/api/invites/${offId}`, { method: 'PUT', token: admin, body: { max_uses: 1 } });
+  ok(r.status === 200 && r.j.invite.max_uses === 1, '已用 0 次的码可以把使用次数改成 1（合法）');
+  r = await req(`/api/invites/${usedMulti.id}`, { method: 'PUT', token: admin, body: { max_uses: 1 } });
+  ok(r.status === 400 && /不能小于/.test(r.j.error || ''), '已用 3 次的码不允许把上限降到 1（防语义矛盾）');
+  r = await req(`/api/invites/${offId}`, { method: 'DELETE', token: admin });
+  ok(r.status === 200, '删除邀请码');
+  // 全部关掉 → 关注册（这是「库里无可用码就关注册」的核心行为）
+  r = await req('/api/invites', { token: admin });
+  const liveCodes = r.j.invites.filter((x) => x.enabled && x.used_count < x.max_uses);
+  for (const c of liveCodes) await req(`/api/invites/${c.id}`, { method: 'PUT', token: admin, body: { enabled: false } });
+  r = await req('/api/auth/register-open');
+  ok(r.j.open === false, '无可用码时 register-open 回 false（注册页直接显示关注册提示）');
+  r = await req('/api/auth/register', { method: 'POST', body: { username: 'reg_closed', password: 'regpass123', email: 'closed@example.com', display_name: '关注册', invite_code: 'ABCDEFGH' } });
+  ok(r.status === 400 && /未开放注册/.test(r.j.error || ''), '关注册时注册请求 400 且说清「未开放注册」');
+  for (const c of liveCodes) await req(`/api/invites/${c.id}`, { method: 'PUT', token: admin, body: { enabled: true } });
+  r = await req('/api/auth/register-open');
+  ok(r.j.open === true, '重新启用后又可注册（管理员一键开关）');
+
+  // ---- v1.10.0：生成配额 ----
+  console.log('== 生成配额（v1.10.0） ==');
+  r = await req('/api/settings', { token: admin });
+  ok(r.status === 200 && r.j.quota_default_guide !== undefined && r.j.quota_default_journal !== undefined, '设置页回传系统默认生成次数两项');
+  r = await req('/api/settings', { method: 'PUT', token: admin, body: { quota_default_guide: '2', quota_default_journal: '4' } });
+  ok(r.status === 200, 'admin 改系统默认次数');
+  r = await req('/api/settings', { token: admin });
+  ok(r.j.quota_default_guide === '2' && r.j.quota_default_journal === '4', '默认次数回读一致（攻略 2 / 游记 4）');
+  r = await req('/api/settings', { method: 'PUT', token: admin, body: { quota_default_guide: 'abc' } });
+  ok(r.status === 400, '默认次数非数字 400');
+  r = await req('/api/settings', { method: 'PUT', token: admin, body: { quota_default_guide: '99999' } });
+  ok(r.status === 400, '默认次数超上限 400（0~9999）');
+  r = await req('/api/users', { token: admin });
+  const regRow = (r.j.users || []).find((x) => x.id === regUid);
+  ok(regRow && regRow.quota.guide.limit === 2 && regRow.quota.journal.limit === 4, '跟随默认的用户按系统默认算额度（2/4）');
+  ok(regRow && regRow.guide_used === 0 && regRow.journal_used === 0 && regRow.tokens_total === 0, '用户管理列表带 已用次数 与 累计 token 字段');
+  const adminRow = (r.j.users || []).find((x) => x.role === 'admin');
+  ok(adminRow && adminRow.quota.guide.unlimited === true, '管理员自己恒不限次数（列表也这么显示）');
+
+  // 失败不扣次数：假 AI 服务器恒回 500
+  let badHits = 0;
+  const badAi = http.createServer((qreq, res) => { badHits++; res.writeHead(500, { 'Content-Type': 'application/json' }); res.end('{"error":"boom"}'); });
+  await new Promise((resolve) => badAi.listen(0, '127.0.0.1', resolve));
+  await req('/api/ai/global', { method: 'PUT', token: admin, body: { base_url: `http://127.0.0.1:${badAi.address().port}`, model: 'fake-500', key: 'sk-fake-500' } });
+  r = await req(`/api/users/${regUid}`, { method: 'PUT', token: admin, body: { quota_guide: 1 } });
+  ok(r.status === 200 && r.j.user.quota_guide === 1 && r.j.user.quota.guide.left === 1, 'admin 给单个用户设 1 次攻略额度');
+  r = await req('/api/guides', { method: 'POST', token: regU, body: { destination: '苏州', days: 1 } });
+  ok(r.status === 200 && r.j.id, '有名额时创建成功（闸门只拦超额的）');
+  const bgid = r.j.id;
+  let bg = null;
+  for (let i = 0; i < 60; i++) {
+    await sleep(300);
+    const g = await req(`/api/guides/${bgid}`, { token: regU });
+    if (g.j.guide && (g.j.guide.status === 'done' || g.j.guide.status === 'error')) { bg = g.j.guide; break; }
+  }
+  ok(bg && bg.status === 'error', 'AI 全挂 → 攻略标记 error（不是无声失败）', bg ? bg.status : '超时');
+  r = await req('/api/users', { token: admin });
+  const afterFail = (r.j.users || []).find((x) => x.id === regUid);
+  ok(afterFail.guide_used === 0 && afterFail.quota.guide.left === 1, '生成失败不扣次数（用户定调：成功才扣）');
+  badAi.close();
+  await req('/api/ai/global', { method: 'PUT', token: admin, body: { base_url: '', model: '', key: '' } });
+
+  // ---- v1.10.0：累计 token 记账（本机 mock SSE 服务回 usage） ----
+  console.log('== token 记账（v1.10.0） ==');
+  // mock：正文分 4 段吐出，最后一拍按 OpenAI 兼容约定单独回 usage（choices 为空）
+  const USAGE_IN = 137, USAGE_OUT = 512;
+  const aiHits = [];
+  const usageAi = http.createServer((qreq, res) => {
+    aiHits.push(1);
+    res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
+    const body = '# 【苏州】1日游完整攻略\n\n## 一、旅行总览\n' + '行程正文，园林与水巷的走法。'.repeat(90) + '\n\n## 九、可选拓展\n收尾。\n';
+    const parts = body.match(/[\s\S]{1,600}/g) || [];
+    let i = 0;
+    const t = setInterval(() => {
+      if (i < parts.length) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: parts[i++] } }] })}\n\n`);
+      } else {
+        clearInterval(t);
+        res.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: USAGE_IN, completion_tokens: USAGE_OUT } })}\n\n`);
+        res.end('data: [DONE]\n\n');
+      }
+    }, 100);
+  });
+  await new Promise((resolve) => usageAi.listen(0, '127.0.0.1', resolve));
+  await req('/api/ai/global', { method: 'PUT', token: admin, body: { base_url: `http://127.0.0.1:${usageAi.address().port}`, model: 'fake-usage', key: 'sk-fake-usage' } });
+  r = await req('/api/users', { token: admin });
+  const beforeTok = (r.j.users || []).find((x) => x.id === regUid);
+  r = await req('/api/guides', { method: 'POST', token: regU, body: { destination: '扬州', days: 1 } });
+  const tgid = r.j.id;
+  ok(r.status === 200 && tgid, '配额还剩 1 次 → 正常创建（走 mock 真接口）');
+  let tg = null;
+  for (let i = 0; i < 60; i++) {
+    await sleep(300);
+    const g = await req(`/api/guides/${tgid}`, { token: regU });
+    if (g.j.guide && (g.j.guide.status === 'done' || g.j.guide.status === 'error')) { tg = g.j.guide; break; }
+  }
+  ok(tg && tg.status === 'done', 'mock AI 出稿（真接口，非桩）', tg ? tg.error : '超时');
+  ok(tg && !tg.content.includes('AI 桩输出'), '正文来自 mock（不是桩兜底）', tg ? tg.content.slice(0, 40) : '无');
+  r = await req('/api/users', { token: admin });
+  const afterTok = (r.j.users || []).find((x) => x.id === regUid);
+  ok(afterTok.tokens_in - beforeTok.tokens_in === USAGE_IN && afterTok.tokens_out - beforeTok.tokens_out === USAGE_OUT,
+    `累计 token 恰好等于服务商报的数（+${afterTok.tokens_in - beforeTok.tokens_in}/+${afterTok.tokens_out - beforeTok.tokens_out}）`);
+  ok(afterTok.tokens_total === afterTok.tokens_in + afterTok.tokens_out, '列表的 tokens_total = in + out（自洽）');
+  ok(afterTok.guide_used === 1 && afterTok.quota.guide.left === 0, '这次成功才扣 1 次 → 剩余 0');
+  r = await req('/api/guides', { method: 'POST', token: regU, body: { destination: '南京', days: 1 } });
+  ok(r.status === 403 && /已用完/.test(r.j.error || '') && /共 1 次/.test(r.j.error || ''), '额度用尽 → 403 且话里带「已用完（共 1 次）」', r.j.error);
+  r = await req(`/api/guides/${tgid}/regenerate`, { method: 'POST', token: regU });
+  ok(r.status === 403, '用尽后重新生成同样 403（不能绕闸）');
+  r = await req(`/api/guides/${tgid}`, { token: regU });
+  ok(r.j.guide.status === 'done' && r.j.guide.content.includes('园林与水巷'), '被拒的请求没动已有攻略（原地重跑也没发生）');
+  // 管理员自己也记 token（用户点名：包括管理员自己）
+  r = await req('/api/users', { token: admin });
+  const aBefore = (r.j.users || []).find((x) => x.role === 'admin');
+  r = await req('/api/guides', { method: 'POST', token: admin, body: { destination: '镇江', days: 1 } });
+  const agid = r.j.id;
+  let ag = null;
+  for (let i = 0; i < 60; i++) {
+    await sleep(300);
+    const g = await req(`/api/guides/${agid}`, { token: admin });
+    if (g.j.guide && (g.j.guide.status === 'done' || g.j.guide.status === 'error')) { ag = g.j.guide; break; }
+  }
+  r = await req('/api/users', { token: admin });
+  const aAfter = (r.j.users || []).find((x) => x.role === 'admin');
+  ok(ag && ag.status === 'done' && aAfter.tokens_out - aBefore.tokens_out === USAGE_OUT, '管理员自己的用量也记在列表上（+1 篇 ≈ +' + (aAfter.tokens_out - aBefore.tokens_out) + '）');
+  ok(aAfter.quota.guide.unlimited === true && aAfter.guide_used === aBefore.guide_used, '管理员不受次数限制（已用数依然记账）');
+  usageAi.close();
+  await req('/api/ai/global', { method: 'PUT', token: admin, body: { base_url: '', model: '', key: '' } });
+  // 桩模式不记 token（诚实边界：没有 usage 就什么都不写，绝不估算）
+  r = await req('/api/users', { token: admin });
+  const sBefore = (r.j.users || []).find((x) => x.id === u1id);
+  r = await req('/api/guides', { method: 'POST', token: u1, body: { destination: '温州', days: 1 } });
+  const sgid2 = r.j.id;
+  let sg2 = null;
+  for (let i = 0; i < 90; i++) {
+    await sleep(500);
+    const g = await req(`/api/guides/${sgid2}`, { token: u1 });
+    if (g.j.guide && (g.j.guide.status === 'done' || g.j.guide.status === 'error')) { sg2 = g.j.guide; break; }
+  }
+  r = await req('/api/users', { token: admin });
+  const sAfter = (r.j.users || []).find((x) => x.id === u1id);
+  ok(sg2 && sg2.status === 'done', '桩模式兜底生成完成（这套件全程桩）', sg2 ? sg2.error : '超时');
+  ok(sAfter.tokens_in === sBefore.tokens_in && sAfter.tokens_out === sBefore.tokens_out, '桩模式不记 token（不估算、不编造）');
+
+  // ---- v1.10.0：游记配额 ----
+  console.log('== 游记配额（v1.10.0） ==');
+  r = await req(`/api/users/${regUid}`, { method: 'PUT', token: admin, body: { quota_journal: 0 } });
+  ok(r.status === 200 && r.j.user.quota.journal.left === 0, 'admin 把游记额度设为 0');
+  r = await req('/api/journals', { method: 'POST', token: regU, body: { destination: '杭州' } });
+  const qjid = r.j.journal.id;
+  r = await req(`/api/journals/${qjid}/generate`, { method: 'POST', token: regU, body: {} });
+  ok(r.status === 403 && /游记生成次数已用完/.test(r.j.error || ''), '0 次 → 游记生成 403（文案点名游记）', r.j.error);
+  r = await req(`/api/journals/${qjid}`, { method: 'PUT', token: regU, body: { meta: { days: '2' } } });
+  ok(r.status === 200, '配额用尽不影响草稿编辑（只有生成/重新生成被闸）');
+  r = await req(`/api/users/${regUid}`, { method: 'PUT', token: admin, body: { quota_journal: 1 } });
+  r = await req(`/api/journals/${qjid}/generate`, { method: 'POST', token: regU, body: {} });
+  ok(r.status === 202, '给 1 次后可以生成');
+  let jq = null;
+  for (let i = 0; i < 60; i++) {
+    await sleep(300);
+    const g = await req(`/api/journals/${qjid}`, { token: regU });
+    if (g.j.journal && g.j.journal.status === 'done') { jq = g.j.journal; break; }
+  }
+  ok(!!jq, '游记生成完成（桩）');
+  r = await req('/api/users', { token: admin });
+  const jRow = (r.j.users || []).find((x) => x.id === regUid);
+  ok(jRow.journal_used === 1 && jRow.quota.journal.left === 0, '游记成功才扣 1 次（已用 1 / 剩余 0）');
+  r = await req(`/api/journals/${qjid}/regenerate`, { method: 'POST', token: regU, body: {} });
+  ok(r.status === 403, '游记用尽后重新生成 403');
+  r = await req(`/api/journals/${qjid}/title`, { method: 'POST', token: regU, body: {} });
+  ok(r.status === 200 && r.j.title, 'AI 标题不受配额闸门限制（配额只管生成/重新生成，标题不扣次数）', `status=${r.status} ${r.j && r.j.error ? r.j.error : ''}`);
+  r = await req(`/api/users/${regUid}`, { method: 'PUT', token: admin, body: { quota_journal: -2 } });
+  ok(r.status === 200 && r.j.user.quota.journal.unlimited === true && r.j.user.quota.journal.left === null, '设 -2 = 不限（left 为 null，前端显示「不限」）');
+  r = await req(`/api/users/${regUid}`, { method: 'PUT', token: admin, body: { quota_guide: -5 } });
+  ok(r.status === 400, '脏配额值 -5 被拒（只认 -2/-1/0~9999）');
+  r = await req(`/api/users/${regUid}`, { method: 'PUT', token: admin, body: { quota_guide: -1, guide_used: 0 } });
+  ok(r.status === 200 && r.j.user.quota_guide === -1 && r.j.user.guide_used === 0 && r.j.user.quota.guide.limit === 2, '管理员可把用户清零并改回跟随默认（额度随即变 2）');
 
   // ---- 在线（真实外网） ----
   if (ONLINE) {

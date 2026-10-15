@@ -9,6 +9,8 @@ const ai = require('./aiService');
 const amap = require('./amapService');
 const weather = require('./weatherService');
 const { fitView } = require('./mapFit');
+const { consumeQuota } = require('../quota');
+const { recordUsage } = require('./usageService');
 
 // ---------- 固定输出框架（用户原文，逐字保留） ----------
 const FRAMEWORK = `# 【目的地】X日游完整攻略
@@ -157,12 +159,15 @@ async function run(guideId) {
     db.prepare("UPDATE guides SET content=?, updated_at=datetime('now','localtime') WHERE id=?").run(content, guideId);
   };
   let streamErr = null;
+  // token 记账（v1.10.0）：服务商回 usage 才记，桩与不支持的网关都不记（绝不估算）。
+  // 重试的每一次都真的烧了服务商的 token，所以按拍记、不按次记——记在回调里天然做到。
+  const onUsage = (u) => { if (g.user_id && cfg.source !== 'stub') recordUsage(g.user_id, u); };
   for (let attempt = 1; attempt <= 3; attempt++) {
     streamErr = null;
     content = '';
     try {
       let first = true;
-      for await (const delta of ai.streamChat(cfg, messages, { maxTokens: 9000 })) {
+      for await (const delta of ai.streamChat(cfg, messages, { maxTokens: 9000, onUsage })) {
         if (first) { first = false; setStage(guideId, 'write'); }
         content += delta;
         save(false);
@@ -197,6 +202,9 @@ async function run(guideId) {
 
   db.prepare("UPDATE guides SET content=?, images_json=?, status='done', error='', stage='', updated_at=datetime('now','localtime') WHERE id=?")
     .run(finalContent, JSON.stringify(enrichResult.images), guideId);
+  // 只有真出成稿才扣次数（用户定调：失败/重试不扣）。run() 开头对 status==='done' 直接 return，
+  // 所以这个单点不会重复扣；带条件 UPDATE 又把并发超扣压到最多 1 次。
+  consumeQuota(g.user_id, 'guide');
 }
 
 // 生成来源块：AI 模型出处 + 地图/天气数据来源链接（v1.2.0 用户要求）

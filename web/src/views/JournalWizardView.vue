@@ -159,11 +159,18 @@
       <div class="nav-row">
         <button class="btn ghost" :disabled="step === 0" @click="step--">← 上一问</button>
         <span class="hint" v-if="saveState">{{ saveState }}</span>
+        <span v-if="quota" class="hint">
+          游记剩余：<b>{{ quota.unlimited ? '不限' : quota.left + ' 次' }}</b>
+          <span v-if="!quota.unlimited">（共 {{ quota.limit }} 次，已用 {{ quota.used }}）</span>
+        </span>
         <span style="flex: 1"></span>
         <button class="btn ghost" v-if="STEPS[step].skippable" @click="step++">跳过 →</button>
         <button v-if="step < STEPS.length - 1" class="btn" @click="next">{{ '下一问 →' }}</button>
-        <button v-else class="btn" :disabled="generating" @click="generate">{{ generating ? '提交中…' : '生成游记 ✍️' }}</button>
+        <button v-else class="btn" :disabled="generating || quotaOut" @click="generate">{{ generating ? '提交中…' : '生成游记 ✍️' }}</button>
       </div>
+      <p v-if="quotaOut" class="err-text" style="margin: 6px 0 0">
+        游记生成次数已用完（共 {{ quota.limit }} 次），请联系管理员增加
+      </p>
     </div>
   </div>
 </template>
@@ -196,6 +203,9 @@ const journalId = ref(null);
 const saveState = ref('');
 const genErr = ref('');
 const generating = ref(false);
+// v1.10.0 生成配额：来自 /auth/me 的 quota.journal（管理员 unlimited）
+const quota = ref(null);
+const quotaOut = computed(() => !!quota.value && !quota.value.unlimited && quota.value.left <= 0);
 const destQ = ref('');
 const destHits = ref([]);
 const spotOptions = ref([]);
@@ -474,6 +484,10 @@ onMounted(async () => {
       if (d.city_id) loadSpots();
     } catch { /* 载入失败就当新写 */ }
   }
+  try {
+    const j = await api('/auth/me');
+    quota.value = (j.user && j.user.quota && j.user.quota.journal) || null;
+  } catch { /* 401 已跳登录 */ }
 });
 </script>
 

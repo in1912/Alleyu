@@ -281,7 +281,8 @@ for (const [hash, sel, name] of [
 await page.goto(URL_BASE + '/#/settings');
 await page.waitForSelector('.tabs .t', { timeout: 6000 });
 const setTabs = await page.locator('.tabs .t').allInnerTexts();
-ok(setTabs.length === 3 && !setTabs.some((t) => t.includes('我的 AI')), '设置页三页签（AI 全局/密码/系统，个人配置已下线）');
+ok(setTabs.length === 3 && !setTabs.some((t) => t.includes('我的 AI')), '设置页三页签（AI 全局/邀请码/系统，个人配置与改密码已下线）');
+ok(setTabs.some((t) => t.includes('邀请码')), '三页签里有「邀请码」（v1.10.0 新增）');
 
 // v1.3.0：国际线路筛选 pill（库页）
 await page.goto(URL_BASE + '/#/library');
@@ -522,6 +523,131 @@ if (jidCreated) {
   if (!del.ok) console.log('  ⚠️ 没删掉，手工删 journals 里这一行 + data/journal_photos/' + jidCreated + '/');
 }
 
+// ---- v1.10.0：邀请码 / 自助注册 / 生成配额 / 权限收口 ----
+// 这一组会在**真实 data/** 里造一个邀请码和一个用户，收尾必须删干净（见段末清理）。
+console.log('== v1.10.0 邀请码 / 注册 / 配额 ==');
+const ah = { Authorization: 'Bearer ' + tk, 'Content-Type': 'application/json' };
+const rnd = Math.random().toString(36).slice(2, 7); // 每次跑换新名，失败重跑不会撞用户名/邮箱唯一约束
+const rUser = 'rr_' + rnd;
+const rMail = 'render_' + rnd + '@example.com';
+const rNick = '渲染自检' + rnd;
+let rUid = 0, rInviteId = 0;
+
+// 管理员：设置页「邀请码」页签 → 生成一个一次性码
+await page.goto(URL_BASE + '/#/settings');
+await page.waitForSelector('.tabs .t', { timeout: 8000 });
+ok((await page.locator('.tabs .t').filter({ hasText: '邀请码' }).count()) === 1, '设置页有「邀请码」页签');
+await page.locator('.tabs .t').filter({ hasText: '邀请码' }).click();
+await page.waitForSelector('.grid3 input[type=number]', { timeout: 6000 });
+await page.locator('button').filter({ hasText: '一次性码' }).click();
+await page.fill('.grid3 input[placeholder^="例如：给老王"]', 'render 自检码');
+await page.locator('button').filter({ hasText: '生成邀请码' }).click();
+await page.waitForSelector('.tb tbody tr td b', { timeout: 8000 });
+const invRow = page.locator('.tb tbody tr').first();
+const inviteCode = (await invRow.locator('td b').innerText()).trim();
+ok(/^[A-HJ-NP-Z2-9]{8}$/.test(inviteCode), `生成 8 位邀请码（字母表去过易混字符）：${inviteCode}`);
+const invTxt = (await invRow.innerText()).replace(/\s+/g, ' ');
+ok(/一次性/.test(invTxt) && /0 \/ 1/.test(invTxt) && /render 自检码/.test(invTxt), `列表显示 一次性 / 已用 0/1 / 备注（${invTxt.slice(0, 50)}）`);
+await page.screenshot({ path: path.join(IMG_DIR, '邀请码.png'), fullPage: false });
+const invList = await fetch(URL_BASE + '/api/invites', { headers: ah }).then((x) => x.json()).catch(() => ({ invites: [] }));
+rInviteId = (((invList.invites || []).find((x) => x.code === inviteCode)) || {}).id || 0;
+
+// 用户管理列表：次数列 + 累计 token 列（管理员自己也在列表里）
+await page.goto(URL_BASE + '/#/users');
+await page.waitForSelector('table.tb thead th', { timeout: 8000 });
+const uHeads = (await page.locator('table.tb thead th').allInnerTexts()).map((t) => t.replace(/\s+/g, ''));
+ok(uHeads.some((h) => h.includes('攻略次数')) && uHeads.some((h) => h.includes('游记次数')), '用户管理列表有「攻略次数/游记次数」列（已用 / 总额）');
+ok(uHeads.some((h) => h.includes('累计token')), '用户管理列表有「累计 token」列');
+await page.screenshot({ path: path.join(IMG_DIR, '用户管理.png'), fullPage: false });
+
+// 普通用户视角：匿名 context 走一遍「注册 → 自动登录 → 自助改账号」
+const uctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+const upage = await uctx.newPage();
+await upage.goto(URL_BASE + '/#/register');
+await upage.waitForSelector('.dlg-card', { timeout: 8000 });
+ok((await upage.locator('.dlg-card input').count()) === 5, '注册页五项表单（邮箱/昵称/用户名/密码/邀请码）');
+ok(!(await upage.locator('.dlg-card button.btn').isDisabled()), '库里有可用码 → 注册按钮可点（register-open=true）');
+await upage.screenshot({ path: path.join(IMG_DIR, '注册.png'), fullPage: false });
+await upage.locator('.dlg-card button.btn').click();
+ok((await upage.locator('.dlg-card .err-text').last().innerText()).includes('请填写邮箱'), '空提交：客户端先拦「请填写邮箱」（五项都必填）');
+await upage.locator('.dlg-card input').nth(0).fill(rMail);
+await upage.locator('.dlg-card input').nth(1).fill(rNick);
+await upage.locator('.dlg-card input').nth(2).fill(rUser);
+await upage.locator('.dlg-card input').nth(3).fill('renderpwd123');
+await upage.locator('.dlg-card input').nth(4).fill('ZZZZZZZZ');
+await upage.locator('.dlg-card button.btn').click();
+await upage.waitForFunction(() => /邀请码/.test((document.querySelector('.dlg-card .err-text') || {}).innerText || ''), null, { timeout: 8000 });
+ok(true, '错邀请码：服务端拒绝并回「邀请码无效或已停用」');
+await upage.locator('.dlg-card input').nth(4).fill(inviteCode);
+await upage.locator('.dlg-card button.btn').click();
+await upage.waitForURL('**/#/', { timeout: 10000 });
+await upage.waitForSelector('.corner .who', { timeout: 8000 });
+ok((await upage.locator('.corner .who').innerText()).includes(rNick), '注册成功即登录（首页右上角显示昵称）');
+
+// 需求 6：普通用户看不到 城市景点库/设置/用户管理，多一个「我的账号」
+const ql = (await upage.locator('.quick-links a').allInnerTexts()).map((t) => t.trim());
+ok(!ql.some((t) => /城市景点库|设置|用户管理/.test(t)), `普通用户首页入口已去掉 城市景点库/设置/用户管理（${ql.length} 项）`);
+ok(ql.some((t) => t.includes('我的账号')), '普通用户首页多出「我的账号」入口');
+await upage.goto(URL_BASE + '/#/account');
+await upage.waitForSelector('.side .nav-item', { timeout: 8000 });
+const uNav = (await upage.locator('.side .nav-item .txt').allInnerTexts()).map((t) => t.trim());
+ok(!uNav.some((t) => /设置|用户管理|城市景点库/.test(t)), `普通用户侧栏没有 设置/用户管理/城市景点库（${uNav.join(' / ')}）`);
+ok(uNav.includes('账号'), '普通用户侧栏有「账号」');
+ok((await upage.locator('.card').first().innerText()).includes(rUser), '账号页只读显示用户名（登录凭据不可改）');
+
+// 需求 6：普通用户自己改昵称与密码
+await upage.locator('.card').nth(2).locator('input').fill('自检改名' + rnd);
+await upage.locator('.card').nth(2).locator('button').click();
+await upage.waitForFunction(() => /昵称已更新/.test(document.body.innerText), null, { timeout: 8000 });
+ok(true, '普通用户能自助改昵称（不必进管理员设置页）');
+await upage.locator('.card').nth(3).locator('input').nth(0).fill('renderpwd123');
+await upage.locator('.card').nth(3).locator('input').nth(1).fill('rendernew456');
+await upage.locator('.card').nth(3).locator('button').click();
+await upage.waitForFunction(() => /密码已修改/.test(document.body.innerText), null, { timeout: 8000 });
+ok(true, '普通用户能自助改密码（原密码校验通过）');
+const relog = await fetch(URL_BASE + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: rUser, password: 'rendernew456' }) });
+ok(relog.ok, '改完密码用新密码真能登录（服务端行为探针，不是只看界面提示）');
+await upage.screenshot({ path: path.join(IMG_DIR, '账号.png'), fullPage: false });
+
+// 需求 5：管理员给这个用户定死次数 → 生成页显示剩余；用光后置灰（真实服务端回包驱动）
+const ulist = await fetch(URL_BASE + '/api/users', { headers: ah }).then((x) => x.json());
+const nUser = (ulist.users || []).find((u) => u.username === rUser);
+rUid = nUser ? nUser.id : 0;
+ok(!!nUser && nUser.role === 'user' && nUser.email === rMail, '用户管理列表出现注册出来的用户（角色=user，带邮箱）');
+ok(!!nUser && nUser.quota_guide === -1 && nUser.quota_journal === -1, '新注册用户配额=跟随系统默认（-1）');
+ok(!!nUser && nUser.can_use_ai === true, '自助注册用户默认开通「使用全局 AI Key」');
+ok(!!nUser && (nUser.allowed_pages || []).includes('guides') && (nUser.allowed_pages || []).includes('weather'), '注册用户默认页面=攻略+天气');
+await fetch(URL_BASE + '/api/users/' + rUid, { method: 'PUT', headers: ah, body: JSON.stringify({ quota_guide: 2, quota_journal: 1 }) });
+await upage.goto(URL_BASE + '/#/plan');
+await upage.waitForSelector('input[placeholder="例如：杭州"]', { timeout: 8000 });
+await upage.waitForFunction(() => /攻略剩余/.test(document.body.innerText), null, { timeout: 8000 });
+const planQuota = (await upage.locator('.card span.hint').filter({ hasText: '攻略剩余' }).first().innerText()).replace(/\s+/g, '');
+ok(/攻略剩余：2次/.test(planQuota), `生成攻略页给用户看剩余次数（${planQuota}）`);
+await fetch(URL_BASE + '/api/users/' + rUid, { method: 'PUT', headers: ah, body: JSON.stringify({ quota_guide: 0 }) });
+// 必须 reload 而不是再 goto 同一个 #/plan（URL 没变 = 没有导航，Vue 不会重新挂载，配额还是旧的 2）
+await upage.reload();
+await upage.waitForSelector('input[placeholder="例如：杭州"]', { timeout: 8000 });
+await upage.waitForFunction(() => /已用完/.test(document.body.innerText), null, { timeout: 8000 });
+ok(await upage.locator('button').filter({ hasText: '生成攻略' }).first().isDisabled(), '次数用完后「生成攻略 ✨」置灰');
+ok((await upage.locator('.card .err-text').first().innerText()).includes('请联系管理员'), '用完时给出可行动的话（找管理员加次数）');
+await upage.goto(URL_BASE + '/#/journals/new');
+await upage.waitForSelector('.wiz', { timeout: 8000 });
+await upage.waitForFunction(() => /游记剩余/.test(document.body.innerText), null, { timeout: 8000 });
+const jQuota = (await upage.locator('.nav-row').first().innerText()).replace(/\s+/g, '');
+ok(/游记剩余：1次/.test(jQuota), `写游记页给用户看剩余次数（${jQuota.slice(0, 40)}）`);
+await uctx.close();
+
+// 收尾：把 render 自己造的邀请码与用户从真实库里删掉（别留自检垃圾）
+if (rInviteId) {
+  const d = await fetch(URL_BASE + '/api/invites/' + rInviteId, { method: 'DELETE', headers: ah });
+  console.log(`  （清理 render 生成的邀请码 ${inviteCode}：HTTP ${d.status}）`);
+}
+if (rUid) {
+  const d = await fetch(URL_BASE + '/api/users/' + rUid, { method: 'DELETE', headers: ah });
+  console.log(`  （清理 render 注册的用户 ${rUser}：HTTP ${d.status}）`);
+  if (!d.ok) console.log('  ⚠️ 没删掉，手工删 users 里 ' + rUser + ' 这一行');
+}
+
 // ---- v1.8.0 游客模式 + 登录页分栏（匿名 context） ----
 console.log('== v1.8.0 游客模式与登录页 ==');
 const guest = await browser.newContext({ viewport: { width: 1280, height: 800 } });
@@ -532,6 +658,9 @@ ok(gpage.url().includes('#/'), '游客进首页不被弹回登录页');
 const cornerTxt = await gpage.locator('.corner').innerText();
 ok(cornerTxt.includes('游客模式'), '右上角游客标识（' + cornerTxt.replace(/\s+/g, ' ').trim() + '）');
 ok((await gpage.locator('.corner button').filter({ hasText: '登录' }).count()) === 1, '右上角登录按钮');
+// v1.10.0：登录按钮旁多一个注册入口
+ok((await gpage.locator('.corner button').filter({ hasText: '注册' }).count()) === 1, '游客首页右上角「登录」旁有「注册」按钮');
+await gpage.screenshot({ path: path.join(IMG_DIR, '首页-游客.png'), fullPage: false });
 ok((await gpage.locator('.quick-links').count()) === 0, '游客不见快捷入口（登录后才有）');
 await gpage.locator('.searchbar .journal-go').click();
 await gpage.waitForURL('**/#/login', { timeout: 6000 });
@@ -540,7 +669,17 @@ await gpage.waitForSelector('.split', { timeout: 6000 });
 ok((await gpage.locator('.split .left svg').count()) >= 1, '登录页左 2/3 骑车动画');
 ok((await gpage.locator('.split .left .brand h1').innerText()).includes('游巷'), '登录页左下品牌字');
 ok((await gpage.locator('.split .right .dlg-card').count()) === 1, '登录页右 1/3 登录框');
+ok((await gpage.locator('.dlg-card button').filter({ hasText: '注册' }).count()) === 1, '登录页登录按钮下方有「注册」按钮');
 await gpage.screenshot({ path: path.join(IMG_DIR, '登录页.png'), fullPage: false });
+await gpage.locator('.dlg-card button').filter({ hasText: '注册' }).click();
+await gpage.waitForURL('**/#/register', { timeout: 6000 });
+// 目标页是懒加载 chunk：waitForURL 只保证 hash 变了，新页可能还没挂载（此时数到的还是登录页那 2 个输入框）
+let regFields = 0;
+try {
+  await gpage.waitForFunction(() => document.querySelectorAll('.dlg-card input').length === 5, null, { timeout: 8000 });
+  regFields = 5;
+} catch { regFields = await gpage.locator('.dlg-card input').count(); }
+ok(regFields === 5, `登录页「注册」跳进注册页（五项表单就位，实际 ${regFields}）`);
 await guest.close();
 
 await browser.close();

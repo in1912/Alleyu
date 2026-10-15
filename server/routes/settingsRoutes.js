@@ -18,9 +18,22 @@ function systemInfo(req, res) {
 }
 r.get('/system-info', systemInfo);
 
+// 生成次数默认值：空串=不限；否则 0~9999 的整数（v1.10.0）
+function quotaSetting(raw) {
+  const s = String(raw === undefined || raw === null ? '' : raw).trim();
+  if (!s) return { val: '' };
+  const n = Number(s);
+  if (!Number.isInteger(n) || n < 0 || n > 9999) return { bad: true };
+  return { val: String(n) };
+}
+
 r.get('/', (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: '仅管理员' });
-  res.json({ amap_key_set: !!getSetting('amap_key') });
+  res.json({
+    amap_key_set: !!getSetting('amap_key'),
+    quota_default_guide: String(getSetting('quota_default_guide') || ''),
+    quota_default_journal: String(getSetting('quota_default_journal') || ''),
+  });
 });
 
 r.put('/', (req, res) => {
@@ -31,6 +44,14 @@ r.put('/', (req, res) => {
       return res.status(400).json({ error: '高德 Key 格式应为 32 位十六进制' });
     }
     setSetting('amap_key', String(amap_key || '').trim());
+  }
+  // 系统默认生成次数：留空 = 不限（也正是老库升级后的语义，不会被这次改动掐住）
+  for (const key of ['quota_default_guide', 'quota_default_journal']) {
+    if (req.body && req.body[key] !== undefined) {
+      const q = quotaSetting(req.body[key]);
+      if (q.bad) return res.status(400).json({ error: '默认生成次数要留空（不限）或填 0~9999 的整数' });
+      setSetting(key, q.val);
+    }
   }
   res.json({ ok: true });
 });

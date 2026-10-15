@@ -63,7 +63,7 @@ function sseCollect(urlPath, ms) {
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'alleyu-check-'));
 const child = spawn(process.execPath, ['--no-warnings', 'server/index.js'], {
   cwd: ROOT,
-  env: { ...process.env, ALLEYU_AI_STUB: '1', PORT: String(PORT), DATA_DIR: dataDir },
+  env: { ...process.env, ALLEYU_AI_STUB: '1', PORT: String(PORT), DATA_DIR: dataDir, ALLEYU_WIKI_OFFLINE: '1' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let serverLog = '';
@@ -151,6 +151,61 @@ try {
   r = await req(`/api/cities/${parisId}/attractions`, { token: admin });
   ok(r.j.attractions.length >= 4, '巴黎著名景点直接入库（≥4）');
 
+  // ---- 景点分页浏览 + 信息扩容（v1.7.0：先线路后城市、未选城市=全部、分页 10/20/30/50） ----
+  console.log('== 景点分页与信息扩容（v1.7.0） ==');
+  r = await req('/api/attractions', { token: u1 });
+  ok(r.status === 200 && r.j.page === 1 && r.j.page_size === 10 && r.j.attractions.length === 10, '未选城市默认展示全部，每页 10 条');
+  ok(r.j.total > 100 && r.j.pages === Math.ceil(r.j.total / 10), `总数/页数自洽（${r.j.total} 条 ${r.j.pages} 页）`);
+  ok(r.j.attractions.every((a) => a.city && a.line && 'intro' in a && 'intro_source' in a && 'intro_url' in a && 'address' in a && 'rating' in a), '行带城市/线路 + 介绍/署名/地址/评分字段');
+  const p1ids = r.j.attractions.map((a) => a.id);
+  r = await req('/api/attractions?page=2', { token: u1 });
+  ok(r.j.page === 2 && r.j.attractions.length === 10 && !r.j.attractions.some((a) => p1ids.includes(a.id)), '第 2 页与第 1 页无重叠（可前后翻页）');
+  r = await req('/api/attractions?page_size=50', { token: u1 });
+  ok(r.j.page_size === 50 && r.j.attractions.length === 50, '每页 50 条生效');
+  r = await req('/api/attractions?page_size=999', { token: u1 });
+  ok(r.j.page_size === 100, '每页上限钳到 100');
+  r = await req('/api/attractions?page=9999', { token: u1 });
+  ok(r.j.page === r.j.pages && r.j.attractions.length <= 100, '越界页钳到最后一页');
+  r = await req('/api/attractions?line=' + encodeURIComponent('欧洲线'), { token: u1 });
+  ok(r.j.attractions.length > 0 && r.j.attractions.every((a) => a.line === '欧洲线') && r.j.total > 20, '线路过滤：只回欧洲线城市景点');
+  r = await req('/api/attractions?city_id=' + parisId, { token: u1 });
+  ok(r.j.attractions.length > 0 && r.j.attractions.every((a) => a.city === '巴黎' && a.city_id === parisId), '城市过滤：只回巴黎');
+  r = await req('/api/attractions?q=' + encodeURIComponent('西湖'), { token: u1 });
+  ok(r.j.total > 0 && r.j.attractions.every((a) => a.name.includes('西湖')), '景点名模糊搜索');
+  r = await req('/api/cities', { token: u1 });
+  ok(r.j.cities.some((c) => c.name === '杭州' && c.attr_count >= 6), '/cities 带每城景点数 attr_count');
+  // 介绍编辑：登录用户可写介绍、不动署名字段；admin 显式传才改署名（页脚致谢数据源）
+  r = await req(`/api/cities/${hz.id}/attractions`, { token: admin });
+  ok(r.j.attractions.length >= 5, '杭州景点列表可读（编辑前情）');
+  const xihu = r.j.attractions.find((a) => a.name === '西湖');
+  ok(!!xihu, '找到西湖种子景点');
+  r = await req(`/api/attractions/${xihu.id}`, { method: 'PUT', token: u1, body: { intro: '杭州西湖，世界文化遗产，湖光山色。' } });
+  ok(r.status === 200 && r.j.attraction && r.j.attraction.intro === '杭州西湖，世界文化遗产，湖光山色。' && r.j.attraction.intro_source === '', '登录用户可编辑介绍（默认不动署名字段）', `status=${r.status} text=${(r.text || '').slice(0, 300)}`);
+  r = await req(`/api/attractions/${xihu.id}`, { method: 'PUT', token: admin, body: { intro_source: '维基百科', intro_url: 'https://zh.wikipedia.org/wiki/%E8%A5%BF%E6%B9%96' } });
+  ok(r.status === 200 && r.j.attraction && r.j.attraction.intro_source === '维基百科' && r.j.attraction.intro_url.includes('wikipedia.org'), 'admin 显式设置署名（CC BY-SA 署名进库）', `status=${r.status} body=${(r.text || '').slice(0, 300)}`);
+  // 离线模式（ALLEYU_WIKI_OFFLINE=1）：补介绍优雅失败、话里说明离线——防「离线测试偷跑真网」（高德的老教训）
+  r = await req(`/api/attractions/${xihu.id}/enrich-intro`, { method: 'POST', token: u1 });
+  ok(r.status === 403, '普通用户补介绍 403');
+  r = await req(`/api/attractions/${xihu.id}/enrich-intro`, { method: 'POST', token: admin });
+  ok(r.status === 502 && /离线/.test(r.j.error || ''), '离线模式补介绍 502 且说明离线');
+  r = await req(`/api/cities/${hz.id}/backfill`, { method: 'POST', token: u1 });
+  ok(r.status === 403, '普通用户一键补全 403');
+  r = await req(`/api/cities/${hz.id}/backfill`, { method: 'POST', token: admin });
+  ok(r.status === 200 && r.j.imported === 0 && /高德/.test(r.j.intro_error || '') && /离线/.test(r.j.intro_error || ''), '离线+无Key 一键补全：不崩，高德/维基失败原因都交代');
+
+  // ---- 动态线路（v1.7.0）：线路不再白名单——新线路名直接入库、可改可查 ----
+  r = await req('/api/cities', { method: 'POST', token: admin, body: { name: '迪拜', province: '阿联酋', line: '中东线' } });
+  ok(r.status === 200 && r.j.city && r.j.city.line === '中东线', '新增城市可用白名单外新线路（中东线）');
+  const dubaiId = r.j.city.id;
+  r = await req('/api/cities/lines', { token: u1 });
+  ok(r.j.lines.some((x) => x.line === '中东线'), '/cities/lines 动态回传新线路');
+  r = await req(`/api/cities/${dubaiId}`, { method: 'PUT', token: admin, body: { line: '非洲线' } });
+  ok(r.status === 200 && r.j.city.line === '非洲线', '城市可重新分配线路（中东线→非洲线）');
+  r = await req('/api/attractions', { method: 'POST', token: u1, body: { city_id: dubaiId, name: '哈利法塔' } });
+  ok(r.status === 200, '新线路城市可录景点');
+  r = await req('/api/attractions?line=' + encodeURIComponent('非洲线'), { token: u1 });
+  ok(r.j.total >= 1 && r.j.attractions.every((a) => a.line === '非洲线' && a.city === '迪拜'), '景点跨城市接口按新线路过滤');
+
   // ---- AI 配置（v1.6.0 起全站只有管理员全局一份，个人配置已下线） ----
   console.log('== AI 配置（全局唯一 + 个人配置下线） ==');
   r = await req('/api/ai/global', { method: 'PUT', token: admin, body: { base_url: 'https://api.example.com/v1', model: 'test-model', key: 'sk-global-test' } });
@@ -231,6 +286,7 @@ try {
       ok(!(guide.images || []).some((x) => x.type === 'photo'), '无 Key：无实景照片');
     }
     ok(guide.content.includes('## 生成来源') && guide.content.includes('https://lbs.amap.com') && guide.content.includes('https://open-meteo.com'), '页脚生成来源+来源链接');
+    ok(guide.content.includes('景点介绍引用') && guide.content.includes('维基百科') && guide.content.includes('CC BY-SA'), '库内有维基介绍时页脚致谢（CC BY-SA 署名行）');
   }
   // 多租户隔离：admin 看不到 u1 的攻略详情？——管理员也无权读他人攻略（本设计 guides 仅本人）
   r = await req(`/api/guides/${gid}`, { token: admin2 });

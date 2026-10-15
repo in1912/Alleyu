@@ -1,15 +1,20 @@
 // 城市库 + 每城市景点库（全局共享，管理员主导维护）：
 //  - 查询：登录即可（攻略表单的「边查边搜」靠它）
 //  - 景点增改：登录即可（用户补录自己知道的景点）
-//  - 城市增删改 / 景点删除 / 高德导入回填：admin
+//  - 城市增删改 / 景点删除 / 高德导入回填 / 一键补全：admin
 const express = require('express');
 const { db } = require('../db');
 const amap = require('../services/amapService');
+const wiki = require('../services/wikiService');
 
 const r = express.Router();
 
-// 线路白名单（v1.3.0 国际线路；写入校验用，查询不做硬限制）
-const LINES = ['国内', '欧洲线', '中亚线', '东亚线', '北美线', '南美线'];
+// 线路不做白名单（v1.7.0 起软校验）：任意非空线路名收（≤20 字），空=国内；
+// 种子六线只是前端建议项，新增线路（如「中东线」）直接入库，/cities/lines 动态回传。
+function normLine(v) {
+  const s = String(v == null ? '' : v).trim().slice(0, 20);
+  return s || '国内';
+}
 
 // ---- 城市 ----
 // 线路汇总（库页的线路筛选 pill 计数）
@@ -27,7 +32,8 @@ r.get('/cities', (req, res) => {
   if (line) { cond.push('line=?'); args.push(line); }
   const where = cond.length ? 'WHERE ' + cond.join(' AND ') : '';
   const limit = q || line ? 300 : 200;
-  const list = db.prepare(`SELECT * FROM cities ${where} ORDER BY hot DESC, id LIMIT ${limit}`).all(...args);
+  // attr_count：每城市景点数（v1.7.0 库页「补全全部缺景点城市」按它挑）
+  const list = db.prepare(`SELECT c.*, (SELECT COUNT(*) FROM attractions a WHERE a.city_id=c.id) attr_count FROM cities c ${where} ORDER BY c.hot DESC, c.id LIMIT ${limit}`).all(...args);
   res.json({ cities: list });
 });
 
@@ -35,12 +41,11 @@ r.post('/cities', (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: '城市新增仅管理员' });
   const { name, province, adcode, lng, lat, hot, line } = req.body || {};
   if (!name) return res.status(400).json({ error: '城市名必填' });
-  if (line && !LINES.includes(line)) return res.status(400).json({ error: '未知线路：' + line });
   if (db.prepare('SELECT id FROM cities WHERE name=?').get(String(name).trim())) return res.status(400).json({ error: '城市已存在' });
   let coord = { lng: null, lat: null };
   if (lng != null && lat != null) coord = { lng: Number(lng), lat: Number(lat) };
   const info = db.prepare('INSERT INTO cities(name,province,adcode,lng,lat,hot,line) VALUES(?,?,?,?,?,?,?)')
-    .run(String(name).trim(), String(province || ''), String(adcode || ''), coord.lng, coord.lat, hot ? 1 : 0, LINES.includes(line) ? line : '国内');
+    .run(String(name).trim(), String(province || ''), String(adcode || ''), coord.lng, coord.lat, hot ? 1 : 0, normLine(line));
   res.json({ city: db.prepare('SELECT * FROM cities WHERE id=?').get(info.lastInsertRowid) });
 });
 
@@ -49,14 +54,13 @@ r.put('/cities/:id', (req, res) => {
   const c = db.prepare('SELECT * FROM cities WHERE id=?').get(Number(req.params.id));
   if (!c) return res.status(404).json({ error: '城市不存在' });
   const b = req.body || {};
-  if (b.line !== undefined && b.line !== '' && !LINES.includes(String(b.line))) return res.status(400).json({ error: '未知线路：' + b.line });
   db.prepare('UPDATE cities SET name=?, province=?, adcode=?, lng=?, lat=?, hot=?, line=? WHERE id=?')
     .run(b.name !== undefined ? String(b.name).trim() : c.name, b.province !== undefined ? String(b.province) : c.province,
       b.adcode !== undefined ? String(b.adcode) : c.adcode,
       b.lng !== undefined ? (b.lng === null || b.lng === '' ? null : Number(b.lng)) : c.lng,
       b.lat !== undefined ? (b.lat === null || b.lat === '' ? null : Number(b.lat)) : c.lat,
       b.hot !== undefined ? (b.hot ? 1 : 0) : c.hot,
-      b.line !== undefined && b.line !== '' ? String(b.line) : c.line, c.id);
+      b.line !== undefined && b.line !== '' ? normLine(b.line) : c.line, c.id);
   res.json({ city: db.prepare('SELECT * FROM cities WHERE id=?').get(c.id) });
 });
 
@@ -70,6 +74,34 @@ r.delete('/cities/:id', (req, res) => {
 r.get('/cities/:id/attractions', (req, res) => {
   const rows = db.prepare('SELECT * FROM attractions WHERE city_id=? ORDER BY must DESC, id').all(Number(req.params.id));
   res.json({ attractions: rows });
+});
+
+// 跨城市分页浏览（v1.7.0 库页景点 tab 改造：先选线路再选城市、未选城市=全部）。
+// 参数：line（线路白名单值）/ city_id / q（景点名模糊）/ page（1 起）/ page_size（默认 10，上限 100）
+r.get('/attractions', (req, res) => {
+  const line = String(req.query.line || '').trim();
+  const cityId = Number(req.query.city_id || 0);
+  const q = String(req.query.q || '').trim();
+  let page = Math.max(1, Number(req.query.page) || 1);
+  let pageSize = Number(req.query.page_size) || 10;
+  if (!Number.isFinite(pageSize) || pageSize < 1) pageSize = 10;
+  pageSize = Math.min(100, Math.floor(pageSize));
+
+  const cond = ['1=1'];
+  const args = [];
+  if (line) { cond.push('c.line=?'); args.push(line); }
+  if (cityId) { cond.push('a.city_id=?'); args.push(cityId); }
+  if (q) { cond.push('a.name LIKE ?'); args.push(`%${q}%`); }
+  const where = 'WHERE ' + cond.join(' AND ');
+  const total = db.prepare(`SELECT COUNT(*) c FROM attractions a JOIN cities c ON c.id=a.city_id ${where}`).get(...args).c;
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  if (page > pages) page = pages;
+  const rows = db.prepare(`
+    SELECT a.*, c.name city, c.line line FROM attractions a JOIN cities c ON c.id=a.city_id
+    ${where}
+    ORDER BY a.must DESC, c.line='国内' DESC, c.id LIMIT ? OFFSET ?
+  `).all(...args, pageSize, (page - 1) * pageSize);
+  res.json({ total, page, page_size: pageSize, pages, attractions: rows });
 });
 
 r.post('/attractions', (req, res) => {
@@ -93,11 +125,16 @@ r.put('/attractions/:id', (req, res) => {
   const a = db.prepare('SELECT * FROM attractions WHERE id=?').get(Number(req.params.id));
   if (!a) return res.status(404).json({ error: '景点不存在' });
   const b = req.body || {};
-  db.prepare('UPDATE attractions SET name=?, type=?, level=?, ticket=?, hours=?, must=?, note=? WHERE id=?')
+  db.prepare('UPDATE attractions SET name=?, type=?, level=?, ticket=?, hours=?, must=?, note=?, intro=?, intro_source=?, intro_url=? WHERE id=?')
     .run(b.name !== undefined ? String(b.name).trim() : a.name, b.type !== undefined ? String(b.type) : a.type,
       b.level !== undefined ? String(b.level) : a.level, b.ticket !== undefined ? String(b.ticket) : a.ticket,
       b.hours !== undefined ? String(b.hours) : a.hours, b.must !== undefined ? (b.must ? 1 : 0) : a.must,
-      b.note !== undefined ? String(b.note) : a.note, a.id);
+      b.note !== undefined ? String(b.note) : a.note,
+      b.intro !== undefined ? String(b.intro).slice(0, 2000) : a.intro,
+      // 署名字段显式传才改（手工修介绍默认沿用原条目来源；CC BY-SA 要求署名跟随文本）
+      b.intro_source !== undefined ? String(b.intro_source).slice(0, 50) : a.intro_source,
+      b.intro_url !== undefined ? String(b.intro_url).slice(0, 500) : a.intro_url,
+      a.id);
   res.json({ attraction: db.prepare('SELECT * FROM attractions WHERE id=?').get(a.id) });
 });
 
@@ -129,10 +166,83 @@ r.post('/import-poi', async (req, res) => {
     return res.status(400).json({ error: '该城市下已有同名景点' });
   }
   const loc = poi.location || null;
-  const info = db.prepare('INSERT INTO attractions(city_id,name,type,level,ticket,hours,must,lng,lat,amap_poi_id) VALUES(?,?,?,?,?,?,0,?,?,?)')
+  const info = db.prepare('INSERT INTO attractions(city_id,name,type,level,ticket,hours,must,lng,lat,amap_poi_id,address,rating) VALUES(?,?,?,?,?,?,0,?,?,?,?,?)')
     .run(Number(city_id), String(poi.name), String(poi.type || '景点').split(';')[0], '', String(poi.ticket || ''), '',
-      loc ? loc.lng : null, loc ? loc.lat : null, String(poi.id || ''));
+      loc ? loc.lng : null, loc ? loc.lat : null, String(poi.id || ''), String(poi.address || ''), String(poi.rating || ''));
   res.json({ attraction: db.prepare('SELECT * FROM attractions WHERE id=?').get(info.lastInsertRowid) });
+});
+
+// ---- v1.7.0 景点信息补全（admin）----
+// 高德 POI 落库（有则跳过同名，无则新增；已有行只补空字段，不覆盖管理员维护值）
+function upsertPoi(cityId, p) {
+  const name = String(p.name || '').trim();
+  if (!name || !p.location) return 'skip';
+  const exist = db.prepare('SELECT id FROM attractions WHERE city_id=? AND name=?').get(cityId, name);
+  if (exist) return 'skip';
+  db.prepare('INSERT INTO attractions(city_id,name,type,level,ticket,hours,must,lng,lat,amap_poi_id,address,rating) VALUES(?,?,?,?,?,?,0,?,?,?,?,?)')
+    .run(cityId, name, String(p.type || '景点').split(';')[0], '', String(p.ticket || ''), '',
+      p.location.lng, p.location.lat, String(p.id || ''), String(p.address || ''), String(p.rating || ''));
+  return 'insert';
+}
+
+// 单个景点补介绍（维基旅行→维基百科）。返回 200 带结果，没条目也算成功（intro:null）
+r.post('/attractions/:id/enrich-intro', async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: '仅管理员' });
+  const a = db.prepare('SELECT * FROM attractions WHERE id=?').get(Number(req.params.id));
+  if (!a) return res.status(404).json({ error: '景点不存在' });
+  try {
+    const hit = await wiki.fetchIntro(a.name);
+    if (hit) {
+      db.prepare('UPDATE attractions SET intro=?, intro_source=?, intro_url=? WHERE id=?')
+        .run(hit.text, hit.source, hit.url, a.id);
+      return res.json({ ok: true, source: hit.source, url: hit.url, intro: hit.text });
+    }
+    res.json({ ok: true, source: '', url: '', intro: '', miss: true });
+  } catch (e) {
+    res.status(502).json({ error: '介绍抓取失败：' + e.message });
+  }
+});
+
+// 城市一键补全（admin）：国内=高德「风景名胜」分类检索导入（两页共 50 条，去重留新）+
+// 全市缺介绍的景点补维基介绍（上限 40 条/次，没补完再点一次）；国际线=只补介绍（高德无海外数据）。
+// 串行执行，一次点击典型 10~30 秒（高德 350ms/次 + 维基 200ms/次节流）。
+r.post('/cities/:id/backfill', async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: '仅管理员' });
+  const c = db.prepare('SELECT * FROM cities WHERE id=?').get(Number(req.params.id));
+  if (!c) return res.status(404).json({ error: '城市不存在' });
+  const out = { city: c.name, line: c.line || '国内', imported: 0, skipped: 0, intro_ok: 0, intro_miss: 0, intro_error: '', intro_left: 0 };
+
+  // ① 高德批量导入（仅国内——高德无海外 POI 数据）
+  if ((c.line || '国内') === '国内') {
+    try {
+      for (const page of [1, 2]) {
+        const pois = await amap.searchPoi({ keywords: '', city: c.name, offset: 25, page, types: '110000' });
+        for (const p of pois) {
+          const r = upsertPoi(c.id, p);
+          out[r === 'insert' ? 'imported' : 'skipped']++;
+        }
+        if (pois.length < 25) break;
+      }
+    } catch (e) {
+      out.intro_error = '高德导入失败：' + e.message; // 高德挂了不拦介绍补全
+    }
+  }
+
+  // ② 维基介绍：该城市全部缺介绍的景点（上限 40/次）
+  try {
+    const need = db.prepare("SELECT id,name FROM attractions WHERE city_id=? AND intro='' ORDER BY must DESC, id LIMIT 40").all(c.id);
+    for (const a of need) {
+      const hit = await wiki.fetchIntro(a.name);
+      if (hit) {
+        db.prepare('UPDATE attractions SET intro=?, intro_source=?, intro_url=? WHERE id=?').run(hit.text, hit.source, hit.url, a.id);
+        out.intro_ok++;
+      } else out.intro_miss++;
+    }
+    out.intro_left = db.prepare("SELECT COUNT(*) n FROM attractions WHERE city_id=? AND intro=''").get(c.id).n;
+  } catch (e) {
+    out.intro_error = (out.intro_error ? out.intro_error + '；' : '') + '介绍抓取失败：' + e.message;
+  }
+  res.json(out);
 });
 
 module.exports = r;

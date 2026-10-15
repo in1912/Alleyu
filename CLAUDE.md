@@ -11,9 +11,9 @@
 ```bash
 npm start                                     # 起 9610（start.bat 同效）；Node >= 22.5（node:sqlite）
 ALLEYU_AI_STUB=1 node server/index.js         # 桩 AI 模式（不调外网；配了真 Key 仍走真接口）
-node scripts/check-alleyu.mjs                 # 离线自检 120 项（独立临时 DATA_DIR，端口 9690）
-node scripts/check-alleyu.mjs --online        # +4 项真实高德/Open-Meteo 断言（共 124）
-NODE_PATH=D:\cc\personal-workbench\node_modules node scripts/render-alleyu.mjs   # Playwright 渲染自检 52 项（自起 FORCE_STUB 桩服务器，独占 9610）
+node scripts/check-alleyu.mjs                 # 离线自检 145 项（独立临时 DATA_DIR，端口 9690）
+node scripts/check-alleyu.mjs --online        # +4 项真实高德/Open-Meteo 断言（共 149）
+node scripts/render-alleyu.mjs                # Playwright 渲染自检 60 项（自起 FORCE_STUB 桩服务器，独占 9610；playwright 已是 devDependency）
 cd web && npm run build                       # 前端 → dist/<时间戳>/ + .latest
 ```
 
@@ -42,7 +42,8 @@ Windows 注意：npm 卡住加 `--registry=https://registry.npmmirror.com`；重
 - 封面与连线（v1.2.0，v1.5.0 改蓝调+自适应）：**封面=偏蓝单色全程路线地图，不再随机搜照片**——buildStaticMapUrl 传 `ink:true`（蓝墨标记/线，见上），前端 CSS 滤镜显示层压蓝，零图像处理依赖；总览图与封面都带全程连接线，`journeyLine()`=drivingPolyline 失败回落直连折线（**保证一定有线**）；点位顺序=正文首次出现顺序（findPoiMentions 按 indexOf 排序=行程顺序）。
 - 生成来源页脚（v1.2.0）：run() 里 `enrichResult.content + sourceFooter(cfg)` 无条件追加——AI 模型/接口出处 + 高德/Open-Meteo 链接 + 时间戳，增强失败也交代。
 - 侧栏图标（v1.1.1）：App.vue 的 ICONS 表=单色线性 SVG（stroke=currentColor 跟随文字色，激活变白），v-html 注入；favicon 与生成转圈=🐰；渲染自检的攻略详情截图只认「现场新生成」那篇（detailShotDone 标志，旧攻略是照片封面别拿去当 README 图）。
-- 国际线路（v1.3.0）：cities.line 列（addCol 默认'国内'；线路白名单 LINES 在 cityRoutes）；db.js SEED_INTL=五线 58 城直接入库（城市挑选对齐参考站 tabiji.ai 覆盖，门票=「约」参考值，坐标 WGS-84 仅天气用），迁移 seedIntlLines 用 settings 标记 seed_intl_v1 **只跑一次，之后管理员删改不复活**；`GET /api/cities/lines` 汇总计数、`/cities?line=` 过滤；库页 LibraryView 线路 pill + 线路列 + 弹窗线路下拉。
+- 国际线路（v1.3.0；**v1.7.0 起线路不再白名单**）：cities.line 列（addCol 默认'国内'；cityRoutes 的 normLine 软校验=任意非空 ≤20 字收、空='国内'，前端种子六线只是 datalist 建议项+动态合并库内现存线路 allLines computed）；db.js SEED_INTL=五线 58 城直接入库（城市挑选对齐参考站 tabiji.ai 覆盖，门票=「约」参考值，坐标 WGS-84 仅天气用），迁移 seedIntlLines 用 settings 标记 seed_intl_v1 **只跑一次，之后管理员删改不复活**；`GET /api/cities/lines` 汇总计数、`/cities?line=` 过滤；库页 LibraryView 线路 pill + 线路列 + 弹窗线路自由输入（datalist）。
+- **v1.7.0 景点分页+信息扩容**：attractions 加 intro/intro_source/intro_url/address/rating 五列（addCol 幂等）；跨城市分页端点 `GET /api/attractions?line=&city_id=&q=&page=&page_size=`（默认 10 上限 100，越界页钳尾页，ORDER BY must DESC+国内优先）；/cities 带 attr_count 子查询。**wikiService**（zh.wikivoyage.org 优先→zh.wikipedia.org 兜底，MediaWiki API 免 Key、200ms 串行节流、条目首段 ≤800 字、ALLEYU_WIKI_OFFLINE=1 直接 throw 防离线自检偷跑真网——高德的老教训）；PUT /attractions/:id 的 intro_source/intro_url **显式传才改**（CC BY-SA 署名跟随文本）；`POST /attractions/:id/enrich-intro` 单条补介绍、`POST /cities/:id/backfill` 一键补全（国内=高德 types=110000 风景名胜两页导入 upsertPoi 同名跳过 + 全市缺介绍补维基上限 40/次；国际线只补介绍——高德无海外 POI；错误全进 intro_error 不炸）。libraryBlock 把介绍前 80 字喂进提示词；sourceFooter 查 DISTINCT intro_source 追加「景点介绍引用：…（CC BY-SA 4.0）」致谢行。**check 断言教训（v1.7.0 调试半天的唯一根因）：断言里把 `attraction` 拼成 `attrraction`（三个 r）→ undefined 恒假，服务端从头就是对的——回包键名先 grep 核对再写断言，别往并发/锁方向想。**
 - **国际线攻略护栏**：高德静态地图实测无海外底图（zoom4 也只渲染中国区域）→ enrichGuide 查城市 line，国际线直接 return（跳过 POI 解析/总览图/路线图/封面/照片），正文插一行「国际线路目的地…不插图」说明；天气（Open-Meteo 全球）+ AI 正文 + 生成来源页脚照常。attractions 新录时国际城不触发高德回填。
 - 攻略展示净化（web/src/md.js 的 cleanMd，GuideView/ShareView 共用）：剥旧桩横幅 + `<!-- alleyu:stub -->` 注释 + 正文只从第一个 markdown 标题开始（AI 废话前言不显示不复制）；存储原文不动。
 - **v1.6.0 分享系统**：`shares` 表（guide_id/token 32hex/mode dynamic|static/snapshot）DDL 在 db.js；管理端点全在 guideRoutes（GET/POST `/:id/shares`、PUT/DELETE `/:id/shares/:token`，全部 user_id 隔离+done-only 409），公开读在 shareRoutes（EXEMPT）。动态=现读 guides.content（攻略非 done 时 404「稍后再试」），静态=读 snapshot（PUT 刷新）。前端 ShareView（#/s/:token，router 守卫豁免 name==='share'，App.vue 整页无侧栏）；GuideView 分享对话框（创建即复制链接）+ 编辑模式（改 clean 后原文存库）。
@@ -56,7 +57,7 @@ Windows 注意：npm 卡住加 `--registry=https://registry.npmmirror.com`；重
 
 ## 发版收尾清单
 
-1. 两个自检全绿（check 120/120 或 --online 124/124；render 52/52——render 前先停 9610 上的一切服务，它要独占端口自起桩服务器）
+1. 两个自检全绿（check 145/145 或 --online 149/149；render 60/60——render 前先停 9610 上的一切服务，它要独占端口自起桩服务器）
 2. 改了前端 → rebuild，确认 dist/.latest 指向新目录
 3. README 截图用 render-alleyu.mjs 重新生成（img/ 文件名=页面名）
 4. 提交推送双远程：github `git@github.com:in1912/Alleyu.git` + gitea `https://gitea.in1912.cc/in1912/Alleyu.git`，push 后 ls-remote 核对

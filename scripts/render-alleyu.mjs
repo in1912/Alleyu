@@ -294,6 +294,30 @@ const parisCell = await page.locator('.tb td').filter({ hasText: '巴黎' }).cou
 ok(parisCell >= 1, '欧洲线筛选出巴黎');
 await page.screenshot({ path: path.join(IMG_DIR, '城市景点库.png'), fullPage: false });
 
+// v1.7.0：景点页签=先线路后城市 + 分页浏览 + 介绍列
+await page.locator('.tabs .t').filter({ hasText: '景点' }).click();
+await page.waitForSelector('.liblines .opt', { timeout: 8000 });
+const attrPills = await page.locator('.liblines .opt').allInnerTexts();
+ok(attrPills[0].includes('全部线路') && attrPills.some((t) => t.includes('国内')) && attrPills.some((t) => t.includes('欧洲线')), '景点页签线路 pill：全部线路+种子线路');
+await page.waitForSelector('.tb tbody tr', { timeout: 8000 });
+await page.waitForTimeout(600);
+const rows1 = await page.locator('.tb tbody tr').count();
+ok(rows1 === 10, `未选城市默认每页 10 条（实际 ${rows1}）`);
+const pagerText = await page.locator('.pager-row .hint').innerText();
+ok(/第 1 \/ \d+ 页 · 共 \d+ 条/.test(pagerText), `分页条自洽（${pagerText.trim()}）`);
+const firstPage1 = await page.locator('.tb tbody tr td b').first().innerText();
+await page.locator('.pager-row button', { hasText: '下一页' }).click();
+await page.waitForTimeout(700);
+const firstPage2 = await page.locator('.tb tbody tr td b').first().innerText();
+ok(firstPage1 !== firstPage2, '下一页翻页生效（首页行变化）');
+await page.locator('select.input').filter({ hasText: '每页' }).first().selectOption('50');
+await page.waitForTimeout(700);
+const rows50 = await page.locator('.tb tbody tr').count();
+ok(rows50 === 50, `每页 50 切换生效（实际 ${rows50}）`);
+const introHeads = await page.locator('.tb thead th').allInnerTexts();
+ok(introHeads.some((h) => h.includes('介绍')) && introHeads.some((h) => h.includes('城市')), '表格带介绍列与城市列');
+await page.screenshot({ path: path.join(IMG_DIR, '城市景点库-景点.png'), fullPage: false });
+
 // 攻略页（桩数据若在）
 await page.goto(URL_BASE + '/#/history');
 await page.waitForTimeout(800);

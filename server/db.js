@@ -138,6 +138,13 @@ addCol('guides', 'stage', "TEXT NOT NULL DEFAULT ''");
 // v1.5.0：完整提示词（buildMessages 的 JSON 快照，详情页生成来源下方折叠框展示+复制）
 addCol('guides', 'prompt', "TEXT NOT NULL DEFAULT ''");
 // v1.6.0 分享表在 DDL 里建（shares：token 能力链接，dynamic=跟随原文 / static=快照）
+// v1.7.0：景点信息扩容——介绍文本（维基旅行/维基百科）、来源署名与条目链接（CC BY-SA 署名要求）、
+// 高德补充字段（地址/评分）。intro_source 空串=暂无介绍；来源值：维基旅行 / 维基百科。
+addCol('attractions', 'intro', "TEXT NOT NULL DEFAULT ''");
+addCol('attractions', 'intro_source', "TEXT NOT NULL DEFAULT ''");
+addCol('attractions', 'intro_url', "TEXT NOT NULL DEFAULT ''");
+addCol('attractions', 'address', "TEXT NOT NULL DEFAULT ''");
+addCol('attractions', 'rating', "TEXT NOT NULL DEFAULT ''");
 
 // ---------- settings 读写 ----------
 function getSetting(key) {

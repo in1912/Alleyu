@@ -38,11 +38,14 @@ function parseLocation(loc) {
 }
 
 // POI 检索。extensions=all 时部分 POI 带 photos[{title,url}] 与 biz_ext（门票/评分）。
-async function searchPoi({ keywords, city = '', citylimit = true, offset = 10, page = 1, extensions = 'all' }) {
-  const j = await call('/v3/place/text', {
+// types：高德 POI 分类码（如 110000=风景名胜），与 keywords 至少给一个（v1.7.0 批量导入用）。
+async function searchPoi({ keywords, city = '', citylimit = true, offset = 10, page = 1, extensions = 'all', types = '' }) {
+  const qs = {
     keywords, city: city || '', citylimit: citylimit ? 'true' : 'false',
     offset: String(offset), page: String(page), extensions,
-  });
+  };
+  if (types) qs.types = types; // 空串不发：keywords/types 至少一个，空参数不给高德留解释空间
+  const j = await call('/v3/place/text', qs);
   return (j.pois || []).map((p) => ({
     id: p.id, name: p.name, type: p.type || '', address: p.address || '',
     location: parseLocation(p.location),

@@ -74,12 +74,16 @@ function paramsBlock(p) {
 }
 
 // 城市景点库上下文：优先用户勾选的必去景点 + 该城市全部库内景点（供 AI 排线参考）
+// v1.7.0：库内维基介绍节选（80 字）一并入提示词——介绍来自维基旅行/维基百科，页脚 sourceFooter 会致谢
 function libraryBlock(cityId) {
   if (!cityId) return '';
-  const rows = db.prepare('SELECT name,type,level,ticket,hours,must FROM attractions WHERE city_id=? ORDER BY must DESC, id').all(cityId);
+  const rows = db.prepare('SELECT name,type,level,ticket,hours,must,intro FROM attractions WHERE city_id=? ORDER BY must DESC, id').all(cityId);
   if (!rows.length) return '';
-  const list = rows.map((r) => `- ${r.name}（${r.type}${r.level ? '｜' + r.level : ''}${r.ticket ? '｜门票' + r.ticket : ''}${r.hours ? '｜建议' + r.hours : ''}）`).join('\n');
-  return `\n\n【目的地景点库（门票/时长为库内维护值，写作时可直接引用）】\n${list}`;
+  const list = rows.map((r) => {
+    const intro = r.intro ? `｜介绍：${r.intro.slice(0, 80)}${r.intro.length > 80 ? '…' : ''}` : '';
+    return `- ${r.name}（${r.type}${r.level ? '｜' + r.level : ''}${r.ticket ? '｜门票' + r.ticket : ''}${r.hours ? '｜建议' + r.hours : ''}${intro}）`;
+  }).join('\n');
+  return `\n\n【目的地景点库（门票/时长为库内维护值，介绍来自维基系百科可作参考，写作时可直接引用）】\n${list}`;
 }
 
 function buildMessages(p, weatherCtx) {
@@ -189,17 +193,25 @@ async function run(guideId) {
   });
 
   // 生成来源页脚：无论增强成败都固定追加（每篇攻略都要交代内容和数据从哪来）
-  const finalContent = enrichResult.content + sourceFooter(cfg);
+  const finalContent = enrichResult.content + sourceFooter(cfg, params.cityId);
 
   db.prepare("UPDATE guides SET content=?, images_json=?, status='done', error='', stage='', updated_at=datetime('now','localtime') WHERE id=?")
     .run(finalContent, JSON.stringify(enrichResult.images), guideId);
 }
 
 // 生成来源块：AI 模型出处 + 地图/天气数据来源链接（v1.2.0 用户要求）
-function sourceFooter(cfg) {
+// v1.7.0：城市景点库里有维基介绍（CC BY-SA）时追加致谢行——用户要求引用必有说明致谢
+function sourceFooter(cfg, cityId) {
   const srcLabel = { global: '管理员全局接口', stub: '本地桩输出，非真实攻略' }[cfg.source] || '未知来源';
   const ts = new Date().toLocaleString('zh-CN', { hour12: false });
-  return `\n\n---\n\n## 生成来源\n\n- **AI 模型**：\`${cfg.model || '未知'}\`（${srcLabel}，OpenAI 兼容格式）\n- **地图与点位**：[高德开放平台](https://lbs.amap.com)（POI 检索 · 静态地图 · 实景照片）\n- **天气数据**：[Open-Meteo](https://open-meteo.com)（16 天预报 + 历史同月推演）\n- 内容由 AI 生成，请以实地与官方信息为准。生成时间：${ts}\n`;
+  let wikiLine = '';
+  if (cityId) {
+    const sources = db.prepare("SELECT DISTINCT intro_source s FROM attractions WHERE city_id=? AND intro<>'' AND intro_source<>''").all(cityId).map((r) => r.s);
+    if (sources.length) {
+      wikiLine = `\n- **景点介绍引用**：${sources.join('、')}（[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/deed.zh) 条目节选，各景点来源链接存于城市景点库）`;
+    }
+  }
+  return `\n\n---\n\n## 生成来源\n\n- **AI 模型**：\`${cfg.model || '未知'}\`（${srcLabel}，OpenAI 兼容格式）\n- **地图与点位**：[高德开放平台](https://lbs.amap.com)（POI 检索 · 静态地图 · 实景照片）\n- **天气数据**：[Open-Meteo](https://open-meteo.com)（16 天预报 + 历史同月推演）${wikiLine}\n- 内容由 AI 生成，请以实地与官方信息为准。生成时间：${ts}\n`;
 }
 
 // ---------- 图文增强 ----------

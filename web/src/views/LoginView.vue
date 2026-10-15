@@ -24,7 +24,6 @@
           <p class="hint" style="margin-top: 12px">
             <a href="#/" style="color: var(--mut)">← 先逛逛首页（游客模式）</a>
           </p>
-          <p class="hint" style="margin-top: 6px">多租户系统：账号由管理员分配；首次部署默认 admin / admin123</p>
         </div>
       </div>
     </div>

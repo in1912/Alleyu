@@ -223,10 +223,15 @@ function libraryAttractions(cityId) {
   return db.prepare('SELECT name,lng,lat,amap_poi_id FROM attractions WHERE city_id=?').all(cityId)
     .sort((a, b) => b.name.length - a.name.length);
 }
-function findPoiMentions(text, lib) {
+function findPoiMentions(text, lib, fuzzyPrefix = false) {
   const found = [];
   for (const a of lib) {
-    const at = text.indexOf(a.name);
+    let at = text.indexOf(a.name);
+    if (at < 0 && fuzzyPrefix && /^[一-龥]{3,12}$/.test(a.name)) {
+      // v1.6.4 兜底库场景：高德 POI 全名（如「八大关风景区」）正文常写短名（「八大关」），
+      // 试名字前缀（长→短，最少 2 字）；仅兜底库启用，种子库仍精确匹配
+      for (let k = a.name.length - 1; k >= 2 && at < 0; k--) at = text.indexOf(a.name.slice(0, k));
+    }
     if (at >= 0 && !found.some((f) => f.name === a.name)) found.push({ ...a, at });
   }
   // 按正文首次出现顺序排＝行程顺序，全程连线按它走
@@ -299,7 +304,6 @@ function splitDays(content) {
 async function enrichGuide(guideId, params, content, weatherCtx) {
   const images = [];
   const cityName = params.destination;
-  const lib = libraryAttractions(params.cityId);
 
   // 国际线路：高德没有海外底图（实测 zoom4 也只渲染中国区域）——地图/照片/坐标解析全部跳过，
   // 天气（Open-Meteo 全球可用）与 AI 正文、生成来源页脚照常。
@@ -324,9 +328,30 @@ async function enrichGuide(guideId, params, content, weatherCtx) {
 
   // 2) 全文景点识别 + 坐标
   setStage(guideId, 'enrich:识别景点与定位坐标');
+  // v1.6.4 兜底库：城市不在景点库（青岛等无种子景点）→ 用高德「景点」检索当库（真名+坐标+照片
+  // 一次到位），必去景点优先补入；POI 全名正文常写短名 → 前缀模糊匹配（仅兜底库启用）
+  let lib = libraryAttractions(params.cityId);
+  let libFuzzy = false;
+  if (!lib.length && cityName) {
+    try {
+      const hits = await amap.searchPoi({ keywords: '景点', city: cityName, offset: 25 });
+      lib = (hits || []).filter((h) => h.location).map((h) => ({ name: h.name, lng: h.location.lng, lat: h.location.lat, photo: h.photo || '' }));
+      for (const m of (params.mustVisits || [])) {
+        const n = String(m || '').trim();
+        if (n && !lib.some((x) => x.name.includes(n))) {
+          try {
+            const h2 = await amap.resolvePoi(n, cityName);
+            if (h2 && h2.location) lib.unshift({ name: n, lng: h2.location.lng, lat: h2.location.lat, photo: h2.photo || '' });
+          } catch { /* 单点失败跳过 */ }
+        }
+      }
+      libFuzzy = lib.length > 0;
+      if (lib.length) console.log('[enrich] 景点库兜底(' + cityName + ' ' + lib.length + ' 条):', lib.slice(0, 8).map((x) => x.name).join('、'));
+    } catch (e) { console.warn('[enrich] 景点库兜底失败:', e.message); }
+  }
   let pois = [];
   try {
-    pois = await ensureCoords(findPoiMentions(content, lib).slice(0, 12), cityName);
+    pois = await ensureCoords(findPoiMentions(content, lib, libFuzzy).slice(0, 12), cityName);
   } catch (e) { console.warn('[enrich] 景点定位失败:', e.message); }
 
   // 3) 总览地图（全部点位打标 + 全程路线连接线）
@@ -334,7 +359,7 @@ async function enrichGuide(guideId, params, content, weatherCtx) {
     setStage(guideId, 'enrich:绘制总览地图');
     try {
       const fallback = params._lng != null ? { lng: params._lng, lat: params._lat } : { lng: pois[0].lng, lat: pois[0].lat };
-      const markers = pois.slice(0, 10).map((p, i) => ({ lng: p.lng, lat: p.lat, label: String(i + 1) }));
+      const markers = pois.slice(0, 9).map((p, i) => ({ lng: p.lng, lat: p.lat, label: String(i + 1) }));
       let paths = [];
       if (pois.length >= 2) {
         const line = await journeyLine(pois);
@@ -357,7 +382,7 @@ async function enrichGuide(guideId, params, content, weatherCtx) {
       setStage(guideId, `enrich:第${di + 1}天路线与照片`);
       const d = days[di];
       const dayText = content.split('\n').slice(d.start, d.end + 1).join('\n');
-      const dayPois = await ensureCoords(findPoiMentions(dayText, lib).slice(0, 6), cityName).catch(() => []);
+      const dayPois = await ensureCoords(findPoiMentions(dayText, lib, libFuzzy).slice(0, 6), cityName).catch(() => []);
       if (!dayPois.length) continue;
       let insert = '';
       try {
@@ -419,7 +444,7 @@ async function enrichGuide(guideId, params, content, weatherCtx) {
       const fit = fitView([...pois, ...line]) || { center: fallback, zoom: 11 };
       const img = await fetchMapImage({
         center: fit.center, zoom: fit.zoom, ink: true,
-        markers: pois.slice(0, 10).map((p, i) => ({ lng: p.lng, lat: p.lat, label: String(i + 1) })),
+        markers: pois.slice(0, 9).map((p, i) => ({ lng: p.lng, lat: p.lat, label: String(i + 1) })),
         paths: line.length >= 2 ? [amap.downsample(line, 70)] : [],
       });
       const firstLineEnd = content.indexOf('\n');
@@ -431,4 +456,4 @@ async function enrichGuide(guideId, params, content, weatherCtx) {
   return { content, images };
 }
 
-module.exports = { generateGuide, buildMessages, splitDays, findPoiMentions, FRAMEWORK };
+module.exports = { generateGuide, enrichGuide, buildMessages, splitDays, findPoiMentions, FRAMEWORK };

@@ -32,7 +32,8 @@ Windows 注意：npm 卡住加 `--registry=https://registry.npmmirror.com`；重
 - **SSE=查库**：生成写库节流 ~600ms，stream 端点 400ms 轮询推增量；前端 GuideView 依赖 `streamed` ref（不是 content）。
 - **SSE 内容协议=基线快照式（v1.4.0）**：tick 维护 `believed`（认为客户端已有的精确内容）——`c.startsWith(believed)` 走 `delta` 增量，否则（首拍/断线重连/enrich **顶部前插封面**改写内容）推 `reset` 全文快照。**旧纯 `slice(sent)` 协议的两个真 bug 就是它修的**：前插场景把中段文本当增量推、封面永远到不了前端；重连 `sent=0` 全文重复追加。前端 done 后以库内全文为准（长度比较不可靠）。
 - **生成阶段管线（v1.4.0）**：guides.stage 列（weather/connect/write/retryN/enrich:子步骤），guideService setStage 写库、SSE 推 `stage` 事件、GuideView 进度条消费；done/error 清空。**过短自动重试（v1.5.0 收紧）**：`minChars = max(1200, days×300)`，循环只在 `content.trim().length >= minChars` 时 break——起因用户实测北京 7 日游真模型正常收流但只吐 600 字（v1.4.0 只拦「空」，短废稿照存）。半途断流且已有内容仍按失败 throw；3 次不达标报「不完整…请点重新生成」。**桩文案必须 ≥minChars**（stubGuideText ~1370 字，check 靠它不靠降闸门）。
-- **高德 staticmap paths 格式**（实测验证过）：`8,0x3f7d5c,0.9,,:lng,lat;lng,lat` — 冒号在点串前、分号隔点、竖线隔多条线。免费 key 3 QPS → amapService 全局 350ms 串行节流，别拆。
+- **高德 staticmap paths 格式**（实测验证过）：`8,0x3f7d5c,0.9,,:lng,lat;lng,lat` — 冒号在点串前、分号隔点、竖线隔多条线。**markers 上限 9 个**（2026-10-15 实测：第 10 个起回 `20003 UNKNOWN_ERROR`；旧 Key 曾容忍 10，新 Key 按文档严校验——guideService 总览/封面均 slice(0,9)）。免费 key 3 QPS → amapService 全局 350ms 串行节流，别拆。
+- **v1.6.4 配图兜底（起因：青岛攻略零图）**：两个独立根因——①新 Key 严校验（见上 9 标记上限，另 paths 必须带冒号、裸坐标 markers 被拒，buildStaticMapUrl 的格式本来就对）；②城市景点库为空时 findPoiMentions 命中 0 点 → 配图管线整体跳过（青岛库=0 条）。修法：enrichGuide 里库空则 `amap.searchPoi({keywords:'景点',city,offset:25})` 兜底当库（真名+坐标+照片一次到位），必去景点 resolvePoi 后优先 unshift；findPoiMentions 加第三参 fuzzyPrefix（仅兜底库启用）——高德 POI 全名「八大关风景区」正文写「八大关」时按名字前缀（长→短最少 2 字）匹配。**enrichGuide 已导出**（e2e 用临时行 99 直调验证 14 图，完事删行）。
 - 照片代理 `/api/amap/photo?u=` 有域名白名单（amap/autonavi/mypeople/gaode 系）。
 - 天气走 Open-Meteo 免 key：预报 16 天；历史用 archive 的 monthStats（一次多年调用+客户端同月过滤，sampleDays≥20 才可信）。预警是规则研判，UI 必须带"非官方预警"标注。
 - 九模块框架模板在 guideService.js 的 FRAMEWORK 常量（用户原话模板，勿改结构）；提示词里要求 `### Day N｜主题` 标题格式，splitDays 靠它切天。

@@ -211,6 +211,43 @@ try {
   r = await req('/api/attractions?line=' + encodeURIComponent('非洲线'), { token: u1 });
   ok(r.j.total >= 1 && r.j.attractions.every((a) => a.line === '非洲线' && a.city === '迪拜'), '景点跨城市接口按新线路过滤');
 
+  // ---- 按线路拉取旅游城市（v1.10.1）：只补库里没有的种子城市，已有的一律跳过不改动 ----
+  console.log('== 拉取旅游城市（v1.10.1） ==');
+  r = await req('/api/cities/seed', { token: admin });
+  ok(r.status === 200 && Array.isArray(r.j.lines) && r.j.lines.length >= 6, '/cities/seed 回六条线路的种子统计');
+  ok(r.j.lines.every((s) => typeof s.total === 'number' && typeof s.have === 'number' && s.have + s.missing === s.total), '每条线路 total = have + missing 自洽');
+  const seedDom = r.j.lines.find((s) => s.line === '国内');
+  ok(seedDom && seedDom.total >= 40 && seedDom.missing === 0, `种子库齐全时国内缺 0 座（total=${seedDom && seedDom.total}）`);
+  ok(r.j.lines.filter((s) => s.line !== '国内').every((s) => s.total >= 5), '五条国际线种子各 ≥5 座');
+  r = await req('/api/cities/pull', { method: 'POST', token: u1, body: { line: '国内' } });
+  ok(r.status === 403, '普通用户拉取城市 403（仅 admin）');
+  r = await req('/api/cities/pull', { method: 'POST', token: admin, body: { line: '非洲线' } });
+  ok(r.status === 200 && r.j.total === 0 && r.j.added === 0 && /没有内置种子/.test(r.j.note || ''), '自建线路（非洲线）无种子：如实回 0 并说明');
+  // 删掉一座有种子景点的国内城市 → 拉取应把它连同种子景点一起补回
+  r = await req('/api/cities?q=' + encodeURIComponent('成都'), { token: admin });
+  const chengdu = r.j.cities.find((c) => c.name === '成都' && (c.line || '国内') === '国内');
+  ok(!!chengdu && chengdu.attr_count >= 3, `找到成都且带种子景点（${chengdu && chengdu.attr_count} 条）`);
+  const chengduAttrs = chengdu.attr_count;
+  r = await req(`/api/cities/${chengdu.id}`, { method: 'DELETE', token: admin });
+  ok(r.status === 200, '删掉成都（拉取前的缺口）');
+  r = await req('/api/cities/seed', { token: admin });
+  ok(r.j.lines.find((s) => s.line === '国内').missing === 1, '缺 1 座时 /cities/seed 如实报 missing=1');
+  r = await req('/api/cities/pull', { method: 'POST', token: admin, body: { line: '国内' } });
+  ok(r.status === 200 && r.j.added === 1 && r.j.added_names.includes('成都') && r.j.skipped === r.j.total - 1, '拉取只补缺失的城市（added=1，其余全跳过）');
+  ok(r.j.attrs >= chengduAttrs, `新城市连带种子景点一起入库（attrs=${r.j.attrs}）`);
+  r = await req('/api/cities?q=' + encodeURIComponent('成都'), { token: admin });
+  const cd2 = r.j.cities.find((c) => c.name === '成都');
+  ok(cd2 && cd2.province === '四川省' && (cd2.line || '国内') === '国内' && cd2.attr_count === chengduAttrs, '补回的成都：省份/线路/景点数与种子一致');
+  r = await req('/api/cities/pull', { method: 'POST', token: admin, body: { line: '国内' } });
+  ok(r.j.added === 0 && r.j.skipped === r.j.total, '再拉一次幂等：全跳过、added=0');
+  // 已有城市**绝不覆盖**：手改省份后再拉，值不变
+  await req(`/api/cities/${cd2.id}`, { method: 'PUT', token: admin, body: { province: '手改省' } });
+  r = await req('/api/cities/pull', { method: 'POST', token: admin, body: { line: '国内' } });
+  ok(r.j.added === 0, '城市已存在时不重复插入');
+  r = await req('/api/cities?q=' + encodeURIComponent('成都'), { token: admin });
+  ok(r.j.cities.find((c) => c.name === '成都').province === '手改省', '拉取不改动已存在城市的数据（手改的省份保留）');
+  await req(`/api/cities/${cd2.id}`, { method: 'PUT', token: admin, body: { province: '四川省' } });
+
   // ---- AI 配置（v1.6.0 起全站只有管理员全局一份，个人配置已下线） ----
   console.log('== AI 配置（全局唯一 + 个人配置下线） ==');
   r = await req('/api/ai/global', { method: 'PUT', token: admin, body: { base_url: 'https://api.example.com/v1', model: 'test-model', key: 'sk-global-test' } });

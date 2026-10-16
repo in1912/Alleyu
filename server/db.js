@@ -790,4 +790,52 @@ function seedIfEmpty() {
 seedIfEmpty();
 seedIntlLines(); // v1.3.0 国际线路（幂等标记，见函数注释）
 
-module.exports = { db, getSetting, setSetting, addCol };
+// ---------- v1.10.1：按线路「拉取旅游城市」 ----------
+// 种子清单是唯一的外部来源：国内=SEED_CITIES，国际五线=SEED_INTL[线路]。
+// 库里已有的城市一律跳过（**不改动任何现有行**——省份/坐标/线路是管理员可能手改过的）；
+// 只补进来的新城市连同它的种子景点一起入库，否则补完还是空壳城市、还得再点一次「一键补全」。
+function seedCitiesOf(line) {
+  const ln = String(line || '国内').trim() || '国内';
+  if (ln === '国内') {
+    return SEED_CITIES.map(([name, province, adcode, lng, lat, hot]) =>
+      ({ name, province, adcode, lng, lat, hot, attrs: SEED_ATTRACTIONS[name] || [] }));
+  }
+  return (SEED_INTL[ln] || []).map(([name, country, iso2, lng, lat, attrs]) =>
+    ({ name, province: country, adcode: iso2, lng, lat, hot: 0, attrs: attrs || [] }));
+}
+// 有种子清单的线路（= 能拉取的那些；用户在库里自建的「中线」之类没有种子，拉取会如实回 0）
+function seedLines() {
+  return ['国内', ...Object.keys(SEED_INTL)];
+}
+// 各路线的种子城市统计：total=种子里有几座 / have=库里已有几座 / missing=还缺几座（前端按钮显示 +N）
+function seedCityStats() {
+  const has = db.prepare('SELECT 1 FROM cities WHERE name=?');
+  return seedLines().map((ln) => {
+    const list = seedCitiesOf(ln);
+    const have = list.filter((c) => has.get(c.name)).length;
+    return { line: ln, total: list.length, have, missing: list.length - have };
+  });
+}
+// 拉取一条线路：把种子里库中没有的城市补进来（连带种子景点，景点同名跳过）
+function pullSeedCities(line) {
+  const ln = String(line || '国内').trim() || '国内';
+  const list = seedCitiesOf(ln);
+  const getCity = db.prepare('SELECT id FROM cities WHERE name=?');
+  const insCity = db.prepare('INSERT INTO cities(name,province,adcode,lng,lat,hot,line) VALUES(?,?,?,?,?,?,?)');
+  const hasAttr = db.prepare('SELECT id FROM attractions WHERE city_id=? AND name=?');
+  const insAttr = db.prepare('INSERT INTO attractions(city_id,name,type,level,ticket,hours,must) VALUES(?,?,?,?,?,?,?)');
+  const addedNames = [];
+  let attrs = 0;
+  for (const c of list) {
+    if (getCity.get(c.name)) continue; // 已有 → 跳过，绝不覆盖
+    insCity.run(c.name, c.province, c.adcode, c.lng, c.lat, c.hot, ln);
+    const row = getCity.get(c.name);
+    addedNames.push(c.name);
+    for (const [an, type, level, ticket, hours, must] of c.attrs) {
+      if (!hasAttr.get(row.id, an)) { insAttr.run(row.id, an, type, level, ticket, hours, must); attrs++; }
+    }
+  }
+  return { line: ln, total: list.length, added: addedNames.length, skipped: list.length - addedNames.length, attrs, added_names: addedNames };
+}
+
+module.exports = { db, getSetting, setSetting, addCol, pullSeedCities, seedCityStats, seedLines };

@@ -3,7 +3,7 @@
 //  - 景点增改：登录即可（用户补录自己知道的景点）
 //  - 城市增删改 / 景点删除 / 高德导入回填 / 一键补全：admin
 const express = require('express');
-const { db } = require('../db');
+const { db, seedCityStats, seedLines, pullSeedCities } = require('../db');
 const amap = require('../services/amapService');
 const wiki = require('../services/wikiService');
 
@@ -21,6 +21,23 @@ function normLine(v) {
 r.get('/cities/lines', (req, res) => {
   const rows = db.prepare('SELECT line, COUNT(*) c FROM cities GROUP BY line ORDER BY CASE line WHEN \'国内\' THEN 0 ELSE 1 END, line').all();
   res.json({ lines: rows });
+});
+
+// v1.10.1：各线路种子城市统计（库页「拉取旅游城市」按钮显示「还缺 N 座」；0 就置灰）
+// 国内=SEED_CITIES、国际五线=SEED_INTL；用户自建线路不在种子里，不会出现在这个列表。
+r.get('/cities/seed', (req, res) => {
+  res.json({ lines: seedCityStats() });
+});
+
+// v1.10.1：按线路拉取旅游城市（admin）——把种子里库中没有的城市补进来（已有城市一律跳过、不改动），
+// 新城市连带它的种子景点一起入库。body: { line }（缺省=国内）。
+r.post('/cities/pull', (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: '拉取城市仅管理员' });
+  const line = normLine((req.body || {}).line);
+  if (!seedLines().includes(line)) {
+    return res.json({ line, total: 0, added: 0, skipped: 0, attrs: 0, added_names: [], note: '该线路没有内置种子城市，无需拉取' });
+  }
+  res.json(pullSeedCities(line));
 });
 
 r.get('/cities', (req, res) => {

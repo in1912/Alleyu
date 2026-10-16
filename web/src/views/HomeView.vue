@@ -16,7 +16,8 @@
     <div class="home-wrap">
       <RiderScene ref="riderRef" />
       <h1 class="home-title">游巷</h1>
-      <p class="home-sub">输入一个目的地，小兔骑车带你去 —— 每敲一个字，它就兔跳一下 🐰</p>
+      <!-- v1.10.1：删掉「—— 每敲一个字，它就兔跳一下」（用户要求；兔跳本身照旧触发，只是不写在页面上） -->
+      <p class="home-sub">输入一个目的地，小兔骑车带你去 🐰</p>
 
       <div class="searchbar">
         <input

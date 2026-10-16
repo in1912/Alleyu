@@ -1,8 +1,10 @@
 // 乳白兔子骑车场景：从 cy.html 移植（原版小猪，v1.1.0 按用户要求改成兔子），
 // 只保留骑手+自行车+马路+树木+山丘。删掉：蓝天/星星/日月/云/天气粒子/车铃按钮/披风皇冠墨镜/路牌/Toast。
 // 天空区域透明 → 页面背景直接透出；容器底缘 CSS 渐隐无框感。
-// v1.10.1：自行车整车改粉色（用户要求，首页/登录页/注册页共用本组件，改一处三页都变）。
-//          兔子本体、小黄帽、马路都没动——只改车。
+// v1.10.1：**只把车架（含挡泥板，原本与车架同一个红）改成浅粉 #f472b6**（用户要求；首页/登录页/注册页
+//          共用本组件，改一处三页都变）。车轮/链条/脚踏/牙盘/车把/车座/车铃/车灯/草编花篮一律保持原色，
+//          兔子本体与小黄帽也没动。同版还按用户要求把兔子的两只眼睛改成一样大（后眼原为透视缩小版）。
+//          ⚠️ 上一版曾把整车都刷成粉，用户明确否掉——「只改车架」就是只改车架。
 // 对外暴露 jump()：首页输入框每敲一个字符触发一次【兔跳特技】。
 <template>
   <div class="scene-box" ref="box">
@@ -46,59 +48,62 @@
             <ellipse id="leftHoof" cx="400" cy="340" rx="11" ry="6" fill="#fbf7ee" stroke="#b3a68c" stroke-width="2" />
           </g>
 
-          <line id="leftCrankArm" x1="385" y1="340" x2="385" y2="310" stroke="#db2777" stroke-width="6" stroke-linecap="round" />
-          <rect id="leftPedalPad" x="374" y="306" width="22" height="7" rx="3" fill="#9d174d" />
+          <line id="leftCrankArm" x1="385" y1="340" x2="385" y2="310" stroke="#64748b" stroke-width="6" stroke-linecap="round" />
+          <rect id="leftPedalPad" x="374" y="306" width="22" height="7" rx="3" fill="#1e293b" />
 
-          <!-- v1.10.1：整车改粉色（用户要求）。配色是「同一支粉色」的深浅五档，
-               不是随便挑几个粉——轮胎最深(#be185d)压住轮廓，车架保持原来的玫粉(#f43f5e)，
-               轮圈/辐条最浅(#fbcfe8/#f9a8d4)，否则整车会糊成一片粉看不出结构。 -->
+          <!-- v1.10.1：**只把车架（含挡泥板，原本和车架同一个红）改成浅粉**，其余整车保持原色：
+               黑胎(#1e293b) + 白轮圈(#e2e8f0) + 灰辐条(#cbd5e1) + 灰链条(#475569) + 灰前叉/座管(#94a3b8)
+               + 深灰车座(#334155) + 浅灰车把(#cbd5e1) + 黄车铃(#fbbf24) + 黄车灯(#fde047)
+               + 草编花篮(#d97706/#92400e/#fef3c7) + 灰白牙盘(#e2e8f0/#64748b) + 灰曲柄脚踏(#94a3b8/#0f172a)。
+               浅粉选 #f472b6：比原来的玫红(#f43f5e)浅一档，且是**在浅灰绿背景上还看得见的最浅一档**
+               （再浅如 #f9a8d4 对比度只有约 1.02:1，等于画了看不见）。 -->
           <g id="rearWheel" transform="translate(305, 340)">
-            <circle r="50" fill="none" stroke="#be185d" stroke-width="11" />
-            <circle r="43" fill="none" stroke="#fbcfe8" stroke-width="3.5" />
-            <g id="rearSpokes" stroke="#f9a8d4" stroke-width="2">
+            <circle r="50" fill="none" stroke="#1e293b" stroke-width="11" />
+            <circle r="43" fill="none" stroke="#e2e8f0" stroke-width="3.5" />
+            <g id="rearSpokes" stroke="#cbd5e1" stroke-width="2">
               <line x1="-42" y1="0" x2="42" y2="0" />
               <line x1="0" y1="-42" x2="0" y2="42" />
               <line x1="-30" y1="-30" x2="30" y2="30" />
               <line x1="-30" y1="30" x2="30" y2="-30" />
-              <circle cx="32" cy="0" r="4" fill="#db2777" stroke="none" />
+              <circle cx="32" cy="0" r="4" fill="#ef4444" stroke="none" />
             </g>
-            <circle r="9" fill="#9d174d" />
+            <circle r="9" fill="#475569" />
           </g>
 
           <g id="frontWheel" transform="translate(485, 340)">
-            <circle r="50" fill="none" stroke="#be185d" stroke-width="11" />
-            <circle r="43" fill="none" stroke="#fbcfe8" stroke-width="3.5" />
-            <g id="frontSpokes" stroke="#f9a8d4" stroke-width="2">
+            <circle r="50" fill="none" stroke="#1e293b" stroke-width="11" />
+            <circle r="43" fill="none" stroke="#e2e8f0" stroke-width="3.5" />
+            <g id="frontSpokes" stroke="#cbd5e1" stroke-width="2">
               <line x1="-42" y1="0" x2="42" y2="0" />
               <line x1="0" y1="-42" x2="0" y2="42" />
               <line x1="-30" y1="-30" x2="30" y2="30" />
               <line x1="-30" y1="30" x2="30" y2="-30" />
-              <circle cx="32" cy="0" r="4" fill="#db2777" stroke="none" />
+              <circle cx="32" cy="0" r="4" fill="#ef4444" stroke="none" />
             </g>
-            <circle r="9" fill="#9d174d" />
+            <circle r="9" fill="#475569" />
           </g>
 
-          <path d="M 305 331 L 385 325 L 385 355 L 305 349 Z" fill="none" stroke="#db2777" stroke-width="3" stroke-dasharray="5 3" />
+          <path d="M 305 331 L 385 325 L 385 355 L 305 349 Z" fill="none" stroke="#475569" stroke-width="3" stroke-dasharray="5 3" />
 
           <g id="bikeFrameGroup">
-            <path d="M 250 328 A 56 56 0 0 1 350 302" fill="none" stroke="#f43f5e" stroke-width="6" stroke-linecap="round" />
-            <path d="M 442 304 A 56 56 0 0 1 536 320" fill="none" stroke="#f43f5e" stroke-width="6" stroke-linecap="round" />
-            <path d="M 305 340 L 385 340 L 342 260 Z" fill="none" stroke="#f43f5e" stroke-width="9" stroke-linejoin="round" stroke-linecap="round" />
-            <path d="M 385 340 L 456 264 L 348 268" fill="none" stroke="#f43f5e" stroke-width="10" stroke-linejoin="round" stroke-linecap="round" />
-            <line x1="485" y1="340" x2="446" y2="225" stroke="#f472b6" stroke-width="7" stroke-linecap="round" />
-            <line x1="485" y1="340" x2="456" y2="264" stroke="#f43f5e" stroke-width="9" stroke-linecap="round" />
-            <line x1="342" y1="260" x2="336" y2="244" stroke="#f472b6" stroke-width="7" stroke-linecap="round" />
-            <path d="M 314 242 Q 338 235 362 245 Q 345 256 318 250 Z" fill="#be185d" />
-            <path d="M 456 238 L 470 238 A 8 8 0 0 1 470 254 L 456 254 Z" fill="#f9a8d4" stroke="#be185d" stroke-width="2.5" />
-            <path d="M 446 225 Q 438 215 422 222" fill="none" stroke="#f472b6" stroke-width="7" stroke-linecap="round" />
+            <path d="M 250 328 A 56 56 0 0 1 350 302" fill="none" stroke="#f472b6" stroke-width="6" stroke-linecap="round" />
+            <path d="M 442 304 A 56 56 0 0 1 536 320" fill="none" stroke="#f472b6" stroke-width="6" stroke-linecap="round" />
+            <path d="M 305 340 L 385 340 L 342 260 Z" fill="none" stroke="#f472b6" stroke-width="9" stroke-linejoin="round" stroke-linecap="round" />
+            <path d="M 385 340 L 456 264 L 348 268" fill="none" stroke="#f472b6" stroke-width="10" stroke-linejoin="round" stroke-linecap="round" />
+            <line x1="485" y1="340" x2="446" y2="225" stroke="#94a3b8" stroke-width="7" stroke-linecap="round" />
+            <line x1="485" y1="340" x2="456" y2="264" stroke="#f472b6" stroke-width="9" stroke-linecap="round" />
+            <line x1="342" y1="260" x2="336" y2="244" stroke="#94a3b8" stroke-width="7" stroke-linecap="round" />
+            <path d="M 314 242 Q 338 235 362 245 Q 345 256 318 250 Z" fill="#334155" />
+            <path d="M 456 238 L 470 238 A 8 8 0 0 1 470 254 L 456 254 Z" fill="#fde047" stroke="#475569" stroke-width="2.5" />
+            <path d="M 446 225 Q 438 215 422 222" fill="none" stroke="#cbd5e1" stroke-width="7" stroke-linecap="round" />
             <g id="bikeBellGroup" transform="translate(438, 212)">
-              <path d="M -9 4 A 9 9 0 0 1 9 4 Z" fill="#f9a8d4" stroke="#be185d" stroke-width="2" />
-              <rect x="-3" y="4" width="6" height="4" fill="#be185d" />
+              <path d="M -9 4 A 9 9 0 0 1 9 4 Z" fill="#fbbf24" stroke="#d97706" stroke-width="2" />
+              <rect x="-3" y="4" width="6" height="4" fill="#475569" />
             </g>
             <g transform="translate(462, 240)">
-              <path d="M 0 0 L 28 0 L 23 28 L 4 28 Z" fill="#f472b6" stroke="#be185d" stroke-width="2" stroke-linejoin="round" />
-              <line x1="3" y1="9" x2="26" y2="9" stroke="#fce7f3" stroke-width="2" stroke-dasharray="4 3" />
-              <line x1="4" y1="18" x2="24" y2="18" stroke="#fce7f3" stroke-width="2" stroke-dasharray="4 3" />
+              <path d="M 0 0 L 28 0 L 23 28 L 4 28 Z" fill="#d97706" stroke="#92400e" stroke-width="2" stroke-linejoin="round" />
+              <line x1="3" y1="9" x2="26" y2="9" stroke="#fef3c7" stroke-width="2" stroke-dasharray="4 3" />
+              <line x1="4" y1="18" x2="24" y2="18" stroke="#fef3c7" stroke-width="2" stroke-dasharray="4 3" />
               <circle cx="10" cy="-3" r="5" fill="#fff" />
               <circle cx="10" cy="-3" r="2.2" fill="#facc15" />
               <circle cx="20" cy="-5" r="6" fill="#fbcfe8" />
@@ -139,12 +144,13 @@
                 <line x1="32" y1="3" x2="46" y2="1" />
                 <line x1="32" y1="8" x2="46" y2="10" />
               </g>
-              <!-- 两只眼（用户 v1.6.2 要求）：侧面视角下前眼+后眼；后眼同组同 opacity，眨眼/笑眼自动联动 -->
+              <!-- 两只眼（v1.6.2 加的后眼；v1.10.1 用户要求**两眼一样大**——后眼原来按透视画小一号(4.6)，
+                   现在改成和前眼同尺寸同高光，只是整体左移 26 个单位。同组同 opacity，眨眼/笑眼自动联动） -->
               <g id="riderEyeOpen" transform="translate(16, -11)">
                 <circle cx="0" cy="0" r="5.5" fill="#1e293b" />
                 <circle cx="-1.8" cy="-2" r="2.2" fill="#ffffff" />
-                <circle cx="-26" cy="0" r="4.6" fill="#1e293b" />
-                <circle cx="-27.6" cy="-1.8" r="1.9" fill="#ffffff" />
+                <circle cx="-26" cy="0" r="5.5" fill="#1e293b" />
+                <circle cx="-27.8" cy="-2" r="2.2" fill="#ffffff" />
               </g>
               <path id="riderEyeHappy" d="M 10 -11 Q 16 -19 22 -11 M -16 -11 Q -10 -18.5 -4 -11" fill="none" stroke="#1e293b" stroke-width="3.5" stroke-linecap="round" opacity="0" />
               <g id="rabbitFrontEar" transform="translate(-16, -26)">
@@ -162,17 +168,17 @@
           </g>
 
           <g transform="translate(385, 340)">
-            <circle r="17" fill="#fbcfe8" stroke="#be185d" stroke-width="4" />
-            <circle r="6" fill="#9d174d" />
+            <circle r="17" fill="#e2e8f0" stroke="#64748b" stroke-width="4" />
+            <circle r="6" fill="#475569" />
           </g>
-          <line id="rightCrankArm" x1="385" y1="340" x2="385" y2="370" stroke="#db2777" stroke-width="6.5" stroke-linecap="round" />
+          <line id="rightCrankArm" x1="385" y1="340" x2="385" y2="370" stroke="#94a3b8" stroke-width="6.5" stroke-linecap="round" />
 
           <g id="frontLegGroup">
             <line id="rightThigh" x1="340" y1="248" x2="375" y2="295" stroke="#f3ecdd" stroke-width="22" stroke-linecap="round" />
             <line id="rightCalf" x1="375" y1="295" x2="385" y2="370" stroke="#ece2cf" stroke-width="16" stroke-linecap="round" />
             <ellipse id="rightHoof" cx="385" cy="370" rx="12" ry="6.5" fill="#fbf7ee" stroke="#b3a68c" stroke-width="2" />
           </g>
-          <rect id="rightPedalPad" x="374" y="366" width="22" height="7" rx="3" fill="#9d174d" />
+          <rect id="rightPedalPad" x="374" y="366" width="22" height="7" rx="3" fill="#0f172a" />
 
           <path id="rightArmUnder" d="M 356 202 Q 396 232 426 223" fill="none" stroke="#b3a68c" stroke-width="20" stroke-linecap="round" />
           <path id="rightArmPath" d="M 356 202 Q 396 232 426 223" fill="none" stroke="#f6f1e5" stroke-width="15" stroke-linecap="round" />

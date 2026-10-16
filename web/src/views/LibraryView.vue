@@ -11,6 +11,22 @@
       <div class="seg liblines" style="margin-bottom: 14px">
         <div v-for="ln in allLines" :key="ln" class="opt" :class="{ on: line === ln }" @click="setLine(ln)">{{ ln }}（{{ lineCount[ln] || 0 }}）</div>
       </div>
+      <!-- v1.10.1：各线路「拉取旅游城市」（管理员）——补的是「库里还没有的内置种子城市」，
+           已有城市一律跳过、不改动。按钮上的 +N = 该线路种子还缺几座，0 时置灰显示 ✓。 -->
+      <div v-if="isAdmin && seedStat.length" class="pull-row">
+        <span class="hint">拉取旅游城市：</span>
+        <button
+          v-for="s in seedStat"
+          :key="s.line"
+          class="btn ghost sm"
+          :disabled="pullBusy || !s.missing"
+          :title="s.missing
+            ? `把「${s.line}」内置的 ${s.missing} 座城市补进来（库里已有的 ${s.have} 座跳过，不改动任何现有数据）`
+            : `「${s.line}」内置的 ${s.total} 座城市库里都有了`"
+          @click="pullLine(s)"
+        >{{ s.line }} {{ s.missing ? '+' + s.missing : '✓' }}</button>
+      </div>
+      <p v-if="pullMsg" class="hint" style="margin: 0 0 12px">{{ pullMsg }}</p>
       <div style="display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap">
         <input v-model="cityQ" class="input" style="max-width: 260px" placeholder="搜索城市/国家" @input="loadCities" />
         <button v-if="isAdmin" class="btn sm" @click="cityDlg = { ...emptyCity, line }">＋ 新增城市</button>
@@ -51,7 +67,7 @@
         <button class="btn sm" :disabled="!curCity" :title="curCity ? '' : '先选城市'" @click="attrDlg = { ...emptyAttr, city_id: curCity }">＋ 新增景点</button>
         <button v-if="isAdmin" class="btn ghost sm" :disabled="!curCity" @click="poiOpen = !poiOpen">🔍 高德检索导入</button>
         <button v-if="isAdmin" class="btn ghost sm" :disabled="!curCity || backfillBusy" @click="backfillCity">⚡ 一键补全本城市</button>
-        <button v-if="isAdmin" class="btn ghost sm" :disabled="backfillBusy" @click="backfillAll">🔄 补全全部缺景点城市</button>
+        <button v-if="isAdmin" class="btn ghost sm" :disabled="backfillBusy" title="只处理一个景点都没有的国内城市；已有景点的城市一律跳过，不重复拉取" @click="backfillAll">🔄 补全全部缺景点城市</button>
       </div>
 
       <div v-if="poiOpen" style="margin-bottom: 14px; padding: 12px; background: var(--card2); border-radius: 10px">
@@ -97,7 +113,7 @@
         <span class="hint">第 {{ pager.page }} / {{ pager.pages }} 页 · 共 {{ pager.total }} 条</span>
         <button class="btn ghost sm" :disabled="pager.page >= pager.pages" @click="goPage(pager.page + 1)">下一页 →</button>
       </div>
-      <p class="hint" style="margin-top: 10px">未选城市时默认展示全部景点（可前后翻页）；「一键补全」= 高德风景名胜检索导入 + 维基旅行/维基百科补介绍（含 CC BY-SA 署名）。坐标为空的景点生成攻略时自动经高德解析。景点所有登录用户都可新增/修改，删除仅管理员。</p>
+      <p class="hint" style="margin-top: 10px">未选城市时默认展示全部景点（可前后翻页）；「一键补全」= 高德风景名胜检索导入 + 维基旅行/维基百科补介绍（含 CC BY-SA 署名）。坐标为空的景点生成攻略时自动经高德解析。景点所有登录用户都可新增/修改，删除仅管理员。<br />「🔄 补全全部缺景点城市」只处理<b>一个景点都没有</b>的国内城市（已有景点的一律跳过、不重复拉取）；「拉取旅游城市」在<b>城市</b>页签，按线路把内置种子里库里还缺的城市补进来。</p>
     </div>
 
     <!-- 城市弹窗 -->
@@ -349,11 +365,40 @@ async function backfillCity() {
     backfillBusy.value = false;
   }
 }
-// 批量：给全部「景点数不足」的国内城市逐个补全（前端串行驱动，能看进度也能随时停）
+// v1.10.1：各线路「拉取旅游城市」（管理员）——服务端按线路把内置种子里「库里还没有」的城市补进来。
+// seedStat 给按钮显示还缺几座（0 就置灰），拉完刷新城市列表/线路计数。
+const seedStat = ref([]);
+const pullBusy = ref(false);
+const pullMsg = ref('');
+async function loadSeedStat() {
+  try { seedStat.value = (await api('/cities/seed')).lines || []; } catch { /* 拉不到就不显示按钮 */ }
+}
+async function pullLine(s) {
+  if (!confirm(`拉取「${s.line}」的旅游城市？\n将补入库里还没有的 ${s.missing} 座（系统内置种子城市），已有的城市一律跳过、不改动任何现有数据。`)) return;
+  pullBusy.value = true;
+  pullMsg.value = `正在拉取「${s.line}」…`;
+  try {
+    const j = await api('/cities/pull', { method: 'POST', body: { line: s.line } });
+    if (j.added) {
+      pullMsg.value = `「${j.line}」补入 ${j.added} 座城市：${j.added_names.join('、')}（连带种子景点 ${j.attrs} 条）；已有 ${j.skipped} 座跳过。`;
+    } else if (j.total) {
+      pullMsg.value = `「${j.line}」内置的 ${j.total} 座城市库里都有了，没有需要补的。`;
+    } else {
+      pullMsg.value = j.note || `「${j.line}」没有内置种子城市，无需拉取。`;
+    }
+    await Promise.all([loadCities(), loadAllCities(), loadLines(), loadSeedStat(), loadAttrs()]);
+  } catch (e) {
+    pullMsg.value = '拉取失败：' + e.message;
+  } finally {
+    pullBusy.value = false;
+  }
+}
+// 批量：给「一个景点都没有」的国内城市逐个补全（v1.10.1 起：**有景点的城市一律跳过、不重复拉取**；
+// 要给某座已有景点的城市加量，用上面的「一键补全本城市」）。前端串行驱动，能看进度也能随时停。
 async function backfillAll() {
-  const list = citiesAll.value.filter((c) => (c.line || '国内') === '国内' && (cityAttrCount[c.id] ?? 0) < 6);
-  if (!list.length) { backfillMsg.value = '国内城市景点都够了（阈值 6 条/城）'; return; }
-  if (!confirm(`将补全 ${list.length} 座景点不足的国内城市（高德导入+维基介绍）。\n串行执行约 ${Math.ceil(list.length * 0.4)} 分钟，期间请勿关页。`)) return;
+  const list = citiesAll.value.filter((c) => (c.line || '国内') === '国内' && (cityAttrCount[c.id] ?? 0) === 0);
+  if (!list.length) { backfillMsg.value = '没有「零景点」的国内城市了（已有景点的城市一律跳过，不重复拉取；要给某座城市加量请用「一键补全本城市」）'; return; }
+  if (!confirm(`将补全 ${list.length} 座「零景点」国内城市（高德风景名胜导入+维基介绍），已有景点的城市一律跳过、不重复拉取。\n串行执行约 ${Math.ceil(list.length * 0.4)} 分钟，期间请勿关页。`)) return;
   backfillBusy.value = true;
   let ok = 0;
   try {
@@ -373,7 +418,7 @@ async function backfillAll() {
 }
 onMounted(async () => {
   try { me.value = (await api('/auth/me')).user; } catch { /* 忽略 */ }
-  await Promise.all([loadCities(), loadAllCities(), loadLines(), loadAttrs()]);
+  await Promise.all([loadCities(), loadAllCities(), loadLines(), loadSeedStat(), loadAttrs()]);
 });
 </script>
 
@@ -381,4 +426,7 @@ onMounted(async () => {
 tr.sel td { background: var(--acc-l); }
 .intro-cell { max-width: 260px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pager-row { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+/* 各线路「拉取旅游城市」按钮组：跟线路 pill 一样换行排布 */
+.pull-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.pull-row .btn.sm:disabled { opacity: 0.55; }
 </style>

@@ -109,6 +109,48 @@ ok(hasSky === 0, '天空已移除（透明融入页面）');
 const btns = await page.locator('.scene-box button').count();
 ok(btns === 0, '场景内无按钮');
 
+// v1.10.1：兔子两只眼睛一样大（用户点名——后眼原为透视缩小版 4.6，现与前眼同为 5.5）
+const bigEyes = await page.locator('.scene-box svg #riderEyeOpen circle[fill="#1e293b"][r="5.5"]').count();
+ok(bigEyes === 2, '两只眼睛一样大（都是 r=5.5）', String(bigEyes));
+ok((await page.locator('.scene-box svg #riderEyeOpen circle[r="4.6"]').count()) === 0, '后眼的小号眼球已不存在');
+
+// v1.10.1：只改车架颜色（浅粉 #f472b6），整车其余部件必须是原色。
+// 上一版把整车刷成粉被用户否掉，这组断言就是防止再发生：先钉死「浅粉恰好出现在这 5 根车架管上」，
+// 再钉死黑色轮胎/白色车圈/草编花篮/灰链条/灰车把/灰牙盘/灰脚踏都还在。
+const FRAME_PINK = '#f472b6';
+ok((await page.locator(`.scene-box svg #bikeFrameGroup path[stroke="${FRAME_PINK}"]`).count()) === 4 &&
+   (await page.locator(`.scene-box svg #bikeFrameGroup line[stroke="${FRAME_PINK}"]`).count()) === 1,
+  '车架（含两片挡泥板 + 三角形车架 + 上/下管）= 5 根浅粉');
+for (const c of ['#be185d', '#db2777', '#9d174d']) {
+  const n = await page.locator(`.scene-box svg [stroke="${c}"], .scene-box svg [fill="${c}"]`).count();
+  ok(n === 0, `整车没有上一版那种深粉残留（${c}）`, String(n));
+}
+ok((await page.locator('.scene-box svg circle[stroke="#1e293b"][stroke-width="11"]').count()) === 2,
+  '两个车轮还是黑胎');
+ok((await page.locator('.scene-box svg circle[stroke="#e2e8f0"][stroke-width="3.5"]').count()) === 2,
+  '两个车轮圈还是白的');
+ok((await page.locator('.scene-box svg #rearSpokes[stroke="#cbd5e1"]').count()) === 1 &&
+   (await page.locator('.scene-box svg #frontSpokes[stroke="#cbd5e1"]').count()) === 1,
+  '辐条还是灰的');
+ok((await page.locator('.scene-box svg path[stroke="#475569"][stroke-dasharray="5 3"]').count()) === 1,
+  '车链还是灰的（虚线）');
+ok((await page.locator('.scene-box svg path[fill="#d97706"][stroke="#92400e"]').count()) === 1,
+  '花篮还是草编色（琥珀色 + 深棕描边）');
+ok((await page.locator('.scene-box svg path[fill="#fbbf24"][stroke="#d97706"]').count()) === 1,
+  '车铃还是黄铜色');
+ok((await page.locator('.scene-box svg circle[fill="#e2e8f0"][stroke="#64748b"]').count()) === 1,
+  '牙盘（绞盘）还是白盘灰边');
+ok((await page.locator('.scene-box svg path[stroke="#cbd5e1"][stroke-width="7"]').count()) === 1,
+  '车把还是灰的');
+ok((await page.locator('.scene-box svg rect[fill="#0f172a"]').count()) === 1 &&
+   (await page.locator('.scene-box svg rect[fill="#1e293b"]').count()) === 1,
+  '两只脚踏还是深色');
+
+// v1.10.1：首页副标题删掉「每敲一个字，它就兔跳一下」（兔跳本身照旧，只是不写在页面上）
+const subTxt = await page.locator('.home-sub').innerText();
+ok(subTxt.includes('小兔骑车带你去') && !subTxt.includes('每敲一个字'),
+  '首页副标题只留「输入一个目的地，小兔骑车带你去」', JSON.stringify(subTxt));
+
 // 打字触发兔跳：bikerRoot transform translate(0, 负数)
 const jumpBefore = await page.locator('#bikerRoot').getAttribute('transform');
 await page.fill('.searchbar input', '杭');
@@ -323,6 +365,19 @@ const parisCell = await page.locator('.tb td').filter({ hasText: '巴黎' }).cou
 ok(parisCell >= 1, '欧洲线筛选出巴黎');
 await page.screenshot({ path: path.join(IMG_DIR, '城市景点库.png'), fullPage: false });
 
+// v1.10.1：城市页签「各线路 拉取旅游城市」按钮组（缺额 0 → 显示 ✓ 且置灰）
+const pullBtn = page.locator('.pull-row button');
+const pullCount = await pullBtn.count();
+const pullTexts = (await pullBtn.allInnerTexts()).map((t) => t.trim());
+ok(pullCount === 6, `城市页签有 6 个「拉取旅游城市」按钮（实际 ${pullCount}）`);
+ok(pullTexts.every((t) => /^(国内|欧洲线|中亚线|东亚线|北美线|南美线)\s*(\+\d+|✓)$/.test(t)), `按钮文案=线路名+还缺几座（${pullTexts.join(' / ')}）`);
+let pullInvariant = true;
+for (let i = 0; i < pullCount; i++) {
+  const dis = await pullBtn.nth(i).isDisabled();
+  if (/✓$/.test(pullTexts[i]) !== dis) pullInvariant = false; // 「✓」⇔ 置灰：没得补就点不动
+}
+ok(pullInvariant, '缺 0 座的线路按钮显示 ✓ 且置灰（✓ 与 disabled 一一对应）');
+
 // v1.7.0：景点页签=先线路后城市 + 分页浏览 + 介绍列
 await page.locator('.tabs .t').filter({ hasText: '景点' }).click();
 await page.waitForSelector('.liblines .opt', { timeout: 8000 });
@@ -345,6 +400,12 @@ const rows50 = await page.locator('.tb tbody tr').count();
 ok(rows50 === 50, `每页 50 切换生效（实际 ${rows50}）`);
 const introHeads = await page.locator('.tb thead th').allInnerTexts();
 ok(introHeads.some((h) => h.includes('介绍')) && introHeads.some((h) => h.includes('城市')), '表格带介绍列与城市列');
+// v1.10.1：批量补全只挑「零景点」城市——按钮 title 与页脚说明都要写明「跳过」
+const bfAllBtn = page.locator('button', { hasText: '补全全部缺景点城市' });
+ok((await bfAllBtn.count()) === 1, '景点页签有「补全全部缺景点城市」按钮');
+ok(/跳过/.test((await bfAllBtn.first().getAttribute('title')) || ''), '批量补全按钮标题写明「已有景点的城市一律跳过」');
+const libTail = await page.locator('.card .hint').last().innerText();
+ok(/一个景点都没有/.test(libTail) && /跳过/.test(libTail), '页脚说明写明只补「一个景点都没有」的城市、已有景点的一律跳过');
 await page.screenshot({ path: path.join(IMG_DIR, '城市景点库-景点.png'), fullPage: false });
 
 // 攻略页（桩数据若在）
@@ -554,6 +615,8 @@ if (jidCreated) {
 // ---- v1.10.0：邀请码 / 自助注册 / 生成配额 / 权限收口 ----
 // 这一组会在**真实 data/** 里造一个邀请码和一个用户，收尾必须删干净（见段末清理）。
 console.log('== v1.10.0 邀请码 / 注册 / 配额 ==');
+// 自检造的那条数据的唯一标记：一切「读自己那行 / 删自己那行」都认这条备注，绝不认「列表第一行」
+const INV_NOTE = 'render 自检码';
 const ah = { Authorization: 'Bearer ' + tk, 'Content-Type': 'application/json' };
 const rnd = Math.random().toString(36).slice(2, 7); // 每次跑换新名，失败重跑不会撞用户名/邮箱唯一约束
 const rUser = 'rr_' + rnd;
@@ -568,17 +631,25 @@ ok((await page.locator('.tabs .t').filter({ hasText: '邀请码' }).count()) ===
 await page.locator('.tabs .t').filter({ hasText: '邀请码' }).click();
 await page.waitForSelector('.grid3 input[type=number]', { timeout: 6000 });
 await page.locator('button').filter({ hasText: '一次性码' }).click();
-await page.fill('.grid3 input[placeholder^="例如：给老王"]', 'render 自检码');
+await page.fill('.grid3 input[placeholder^="例如：给老王"]', INV_NOTE);
 await page.locator('button').filter({ hasText: '生成邀请码' }).click();
-await page.waitForSelector('.tb tbody tr td b', { timeout: 8000 });
-const invRow = page.locator('.tb tbody tr').first();
+// ⚠️ 别拿 `.tb tbody tr` 的 .first() 当自己那行：真实库里可能已经有用户自己的邀请码，
+//    列表在 POST 回包前就渲染好了，`waitForSelector('.tb tbody tr td b')` 会立刻命中**旧行**，
+//    于是读到——并在收尾按码反查 id 时**删掉**——别人的邀请码。认准自己填的那条备注。
+//    （v1.10.1 自检真踩过：删掉了真实库里一个 500 次的老码，靠 sqlite 回收页把原值捞回来才复原。）
+const invRow = page.locator('.tb tbody tr').filter({ hasText: INV_NOTE }).first();
+await invRow.waitFor({ timeout: 8000 });
 const inviteCode = (await invRow.locator('td b').innerText()).trim();
 ok(/^[A-HJ-NP-Z2-9]{8}$/.test(inviteCode), `生成 8 位邀请码（字母表去过易混字符）：${inviteCode}`);
 const invTxt = (await invRow.innerText()).replace(/\s+/g, ' ');
-ok(/一次性/.test(invTxt) && /0 \/ 1/.test(invTxt) && /render 自检码/.test(invTxt), `列表显示 一次性 / 已用 0/1 / 备注（${invTxt.slice(0, 50)}）`);
+ok(/一次性/.test(invTxt) && /0 \/ 1/.test(invTxt) && new RegExp(INV_NOTE).test(invTxt), `列表显示 一次性 / 已用 0/1 / 备注（${invTxt.slice(0, 50)}）`);
 await page.screenshot({ path: path.join(IMG_DIR, '邀请码.png'), fullPage: false });
 const invList = await fetch(URL_BASE + '/api/invites', { headers: ah }).then((x) => x.json()).catch(() => ({ invites: [] }));
-rInviteId = (((invList.invites || []).find((x) => x.code === inviteCode)) || {}).id || 0;
+// 按**自己那条备注**反查 id（不用码——码只是转手，真正独一无二的是备注）；顺带自证：查到的那行码必须与我读到的一致
+const mine = (invList.invites || []).find((x) => x.note === INV_NOTE);
+ok(!!mine && mine.code === inviteCode, '收尾定位到自己生成的邀请码（按备注反查，不会误删别人的码）');
+rInviteId = (mine || {}).id || 0;
+if (!rInviteId) console.log('  ⚠️ 没定位到自检码，真实库里可能留了一条备注为「' + INV_NOTE + '」的邀请码，请手工删');
 
 // 用户管理列表：次数列 + 累计 token 列（管理员自己也在列表里）
 await page.goto(URL_BASE + '/#/users');
@@ -600,6 +671,7 @@ const rbeian = upage.locator('.beian a').first();
 ok((await rbeian.innerText()).trim() === '浙ICP备2026080083号-1', '注册页底部挂上备案号');
 ok((await rbeian.getAttribute('href')) === 'https://beian.miit.gov.cn/' && (await rbeian.getAttribute('target')) === '_blank',
   '注册页备案号指向工信部且新窗口打开');
+ok(!(await upage.locator('body').innerText()).includes('每敲一个字'), '注册页没有「每敲一个字，它就兔跳一下」这句');
 await upage.screenshot({ path: path.join(IMG_DIR, '注册.png'), fullPage: false });
 await upage.locator('.dlg-card button.btn').click();
 ok((await upage.locator('.dlg-card .err-text').last().innerText()).includes('请填写邮箱'), '空提交：客户端先拦「请填写邮箱」（五项都必填）');
@@ -707,6 +779,7 @@ ok((await gpage.locator('.dlg-card button').filter({ hasText: '注册' }).count(
 const lbeian = gpage.locator('.beian a').first();
 ok((await lbeian.innerText()).trim() === '浙ICP备2026080083号-1', '登录页底部挂上备案号');
 ok((await lbeian.getAttribute('href')) === 'https://beian.miit.gov.cn/', '登录页备案号指向工信部');
+ok(!(await gpage.locator('body').innerText()).includes('每敲一个字'), '登录页没有「每敲一个字，它就兔跳一下」这句');
 await gpage.screenshot({ path: path.join(IMG_DIR, '登录页.png'), fullPage: false });
 await gpage.locator('.dlg-card button').filter({ hasText: '注册' }).click();
 await gpage.waitForURL('**/#/register', { timeout: 6000 });

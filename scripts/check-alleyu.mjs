@@ -610,6 +610,34 @@ try {
   r = await req(`/api/guides/${gid}/shares/${dynTok}`, { token: admin2, method: 'DELETE' });
   ok(r.status === 404, '他人撤销分享 404');
 
+  // ---- v1.10.2：公开访问地址（分享链接域名）----
+  // 起因：线上是裸 HTTP，navigator.clipboard 不存在 → 复制分享链接报
+  // "Cannot read properties of undefined (reading 'writeText')"。前端已改成带回落的 copyText；
+  // 这里管服务端这半：域名可配 + 所有登录用户都能读到（拼链接的不止管理员）。
+  console.log('== 公开访问地址 / 分享链接域名（v1.10.2） ==');
+  r = await req('/api/settings', { token: admin });
+  ok(r.status === 200 && r.j.public_base_url === '', '设置页回传公开访问地址（默认空 = 跟随当前地址）');
+  r = await req('/api/auth/me', { token: u1 });
+  ok(r.status === 200 && r.j.share_base === '', '普通用户的 /auth/me 也带 share_base（默认空）');
+  r = await req('/api/settings', { method: 'PUT', token: admin, body: { public_base_url: 'http://alleyu.in1912.cn/' } });
+  ok(r.status === 200, 'admin 保存公开访问地址（末尾斜杠会被去掉）');
+  r = await req('/api/settings', { token: admin });
+  ok(r.j.public_base_url === 'http://alleyu.in1912.cn', '回读一致且已去尾斜杠');
+  r = await req('/api/auth/me', { token: u1 });
+  ok(r.j.share_base === 'http://alleyu.in1912.cn', '普通用户读到配好的 share_base（分享链接用得上）');
+  r = await req('/api/auth/me');
+  ok(r.status === 401, '未登录访问 /auth/me 仍 401（没因为加了 share_base 就放行）');
+  for (const bad of ['alleyu.in1912.cn', 'ftp://x.com', 'http://a b.com']) {
+    r = await req('/api/settings', { method: 'PUT', token: admin, body: { public_base_url: bad } });
+    ok(r.status === 400, `非法公开访问地址 400（${bad}）`);
+  }
+  r = await req('/api/settings', { method: 'PUT', token: u1, body: { public_base_url: 'http://evil.test' } });
+  ok(r.status === 403, '普通用户改公开访问地址 403');
+  r = await req('/api/settings', { method: 'PUT', token: admin, body: { public_base_url: '' } });
+  ok(r.status === 200, '留空可就地清掉（回落当前地址）');
+  r = await req('/api/settings', { token: admin });
+  ok(r.j.public_base_url === '', '清空后回读为空');
+
   // 生成中的攻略不能编辑/分享（409）：挂一只永不响应的假 AI 把攻略钉在 generating
   const fakeHang = http.createServer(() => { /* 收下请求，永不响应 */ });
   await new Promise((resolve) => fakeHang.listen(0, '127.0.0.1', resolve));

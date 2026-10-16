@@ -27,12 +27,22 @@ function quotaSetting(raw) {
   return { val: String(n) };
 }
 
+// 公开访问地址（v1.10.2）：拼分享链接用的域名。留空 = 前端跟随 location（老行为）。
+// 只允许 http(s):// 开头、无空格、可带端口；末尾斜杠会被去掉（拼接时还会再兜一次）。
+function baseUrlSetting(raw) {
+  const v = String(raw === undefined || raw === null ? '' : raw).trim().replace(/\/+$/, '');
+  if (!v) return { val: '' };
+  if (!/^https?:\/\/[^\s/]+(:\d+)?(\/[^\s]*)?$/.test(v)) return { bad: true };
+  return { val: v };
+}
+
 r.get('/', (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: '仅管理员' });
   res.json({
     amap_key_set: !!getSetting('amap_key'),
     quota_default_guide: String(getSetting('quota_default_guide') || ''),
     quota_default_journal: String(getSetting('quota_default_journal') || ''),
+    public_base_url: String(getSetting('public_base_url') || ''),
   });
 });
 
@@ -52,6 +62,12 @@ r.put('/', (req, res) => {
       if (q.bad) return res.status(400).json({ error: '默认生成次数要留空（不限）或填 0~9999 的整数' });
       setSetting(key, q.val);
     }
+  }
+  // 公开访问地址（v1.10.2）：留空 = 清掉（前端回落 location）
+  if (req.body && req.body.public_base_url !== undefined) {
+    const b = baseUrlSetting(req.body.public_base_url);
+    if (b.bad) return res.status(400).json({ error: '公开访问地址要留空，或以 http:// 或 https:// 开头的完整地址（例如 http://alleyu.in1912.cn）' });
+    setSetting('public_base_url', b.val);
   }
   res.json({ ok: true });
 });

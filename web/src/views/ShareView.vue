@@ -38,6 +38,7 @@ import { useRoute } from 'vue-router';
 import { marked } from 'marked';
 import { api, downloadPdfFile } from '../api/index.js';
 import { cleanMd } from '../md.js';
+import { copyText } from '../clipboard.js';
 
 const route = useRoute();
 const sh = ref(null);
@@ -68,7 +69,11 @@ async function pdf() {
   }
 }
 function copy() {
-  navigator.clipboard.writeText(cleanMd(sh.value?.content || '')).then(() => alert('已复制全文'));
+  // v1.10.2：分享页多半是裸 HTTP 打开的，navigator.clipboard 不存在——统一走 copyText（内置回落）
+  copyText(cleanMd(sh.value?.content || '')).then(
+    () => alert('已复制全文'),
+    (e) => alert(e.message),
+  );
 }
 
 (async () => {

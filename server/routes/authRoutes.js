@@ -2,7 +2,7 @@
 // 注意：/register 与 /register-open 在 server/index.js 的 EXEMPT 里（免登录），
 // 那两个 handler 里 **req.user 一定是 undefined**，不能引用。
 const express = require('express');
-const { db } = require('../db');
+const { db, getSetting } = require('../db');
 const { verifyPassword, hashPassword, createSession, destroySession } = require('../auth');
 const { quotaState } = require('../quota');
 
@@ -98,7 +98,9 @@ r.post('/logout', (req, res) => {
 });
 
 r.get('/me', (req, res) => {
-  res.json({ user: req.user ? publicUser(req.user) : null });
+  // share_base（v1.10.2）：管理员配的「公开访问地址」，前端拼分享链接用；
+  // 放在这里是因为分享链接所有登录用户都会生成，而 /api/settings 只有管理员能读。
+  res.json({ user: req.user ? publicUser(req.user) : null, share_base: String(getSetting('public_base_url') || '') });
 });
 
 r.post('/password', (req, res) => {

@@ -44,7 +44,7 @@
     <div v-if="shareDlg" class="mask" @click.self="shareDlg = false">
       <div class="dlg">
         <h3>🔗 分享这份攻略</h3>
-        <p class="hint" style="margin: 0 0 10px">链接免登录可打开；任何人拿到链接都能看，撤销即失效。</p>
+        <p class="hint" style="margin: 0 0 10px">链接免登录可打开；任何人拿到链接都能看，撤销即失效。点链接文字即全选，可手动复制。</p>
         <div class="seg" style="display: flex; flex-direction: column; align-items: stretch; gap: 8px">
           <span class="opt" :class="{ on: newMode === 'dynamic' }" @click="newMode = 'dynamic'">🔄 动态更新 —— 你改了攻略（或重新生成），链接内容自动跟随</span>
           <span class="opt" :class="{ on: newMode === 'static' }" @click="newMode = 'static'">🧊 静态链接 —— 冻结当前内容，之后点「刷新快照」才更新</span>
@@ -57,10 +57,11 @@
           <div class="hint" style="margin-bottom: 6px">已有链接（{{ shares.length }}）：</div>
           <div v-for="s in shares" :key="s.token" class="share-row">
             <span class="badge" :class="s.mode === 'dynamic' ? 'blue' : 'gray'">{{ s.mode === 'dynamic' ? '动态' : '静态' }}</span>
-            <code class="share-url">{{ shareUrl(s) }}</code>
+            <code class="share-url" title="点一下全选，方便手动复制" @click="selectUrl">{{ shareUrl(s) }}</code>
             <span class="hint">更新于 {{ s.updated_at }}</span>
             <span style="flex: 1"></span>
             <button class="btn ghost sm" @click="copyUrl(s)">复制</button>
+            <a class="btn ghost sm" :href="shareUrl(s)" target="_blank" rel="noreferrer">打开</a>
             <button v-if="s.mode === 'static'" class="btn ghost sm" @click="refreshSnap(s)">刷新快照</button>
             <button class="btn danger sm" @click="revoke(s)">撤销</button>
           </div>
@@ -87,6 +88,7 @@ import { useRoute } from 'vue-router';
 import { marked } from 'marked';
 import { api, token, withToken, downloadPdfFile } from '../api/index.js';
 import { cleanMd } from '../md.js';
+import { copyText } from '../clipboard.js';
 
 const route = useRoute();
 const id = route.params.id;
@@ -185,14 +187,17 @@ async function loadGuide() {
   }
 }
 function copy() {
-  navigator.clipboard.writeText(clean.value).then(() => {
-    alert('已复制全文');
-  });
+  // v1.10.2：走 utils 里的 copyText（HTTP 页面没有 navigator.clipboard，已内置回落），失败给人话提示
+  copyText(clean.value).then(
+    () => alert('已复制全文'),
+    (e) => alert(e.message),
+  );
 }
 function copyPrompt() {
-  navigator.clipboard.writeText(guide.value?.prompt || '').then(() => {
-    alert('已复制完整提示词');
-  });
+  copyText(guide.value?.prompt || '').then(
+    () => alert('已复制完整提示词'),
+    (e) => alert(e.message),
+  );
 }
 // 重新生成（v1.5.0）：失败红字时一键原参数重跑；已完成的会先确认（覆盖现有内容）
 async function regen() {
@@ -267,25 +272,50 @@ const shareDlg = ref(false);
 const shares = ref([]);
 const newMode = ref('dynamic');
 const shareMsg = ref('');
-function shareUrl(s) { return location.origin + location.pathname + '#/s/' + s.token; }
+// v1.10.2：管理员可在「设置 → 系统」里配「公开访问地址」（share_base），
+// 用来拼分享链接——否则用本机 IP / localhost 打开时复制出去的链接别人打不开。
+// 没配就走当前地址（与老行为一致）。
+const shareBase = ref('');
+function shareUrl(s) {
+  const base = String(shareBase.value || '').trim().replace(/\/+$/, '');
+  if (base) return base + '/#/s/' + s.token;
+  return location.origin + location.pathname + '#/s/' + s.token;
+}
+// 点一下链接文字=全选，方便手动复制（HTTP 页面里自动复制可能被浏览器拦）
+function selectUrl(e) {
+  const sel = document.getSelection();
+  const el = e.currentTarget;
+  if (!sel || !el) return;
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
 async function openShare() {
   shareDlg.value = true;
   shareMsg.value = '';
   try {
     shares.value = (await api('/guides/' + id + '/shares')).shares;
   } catch (e) { alert(e.message); }
+  try { shareBase.value = (await api('/auth/me')).share_base || ''; } catch { /* 拿不到就用当前地址 */ }
 }
 async function createShare() {
   shareMsg.value = '';
   try {
     const s = await api('/guides/' + id + '/shares', { method: 'POST', body: { mode: newMode.value } });
     shares.value.unshift(s);
-    copyUrl(s);
-    shareMsg.value = '已生成并复制链接';
+    await copyUrl(s); // 复制失败不能连累「生成」——它已经生成了
+    if (!shareMsg.value) shareMsg.value = '已生成链接';
   } catch (e) { alert(e.message); }
 }
-function copyUrl(s) {
-  navigator.clipboard.writeText(shareUrl(s)).then(() => { shareMsg.value = '已复制链接'; });
+async function copyUrl(s) {
+  try {
+    await copyText(shareUrl(s));
+    shareMsg.value = '已复制链接';
+  } catch {
+    // 不再抛那个英文的 Clipboard 异常，直接告诉用户怎么办
+    shareMsg.value = '链接已生成，但浏览器不允许自动复制——点一下上面那行链接全选，再手动复制';
+  }
 }
 async function refreshSnap(s) {
   try {
@@ -355,5 +385,5 @@ loadGuide().then(() => {
 .editarea:focus { border-color: var(--acc); box-shadow: 0 0 0 3px rgba(92, 138, 106, 0.15); }
 /* 分享对话框里的链接行（v1.6.0） */
 .share-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px dashed var(--line); flex-wrap: wrap; }
-.share-url { font-size: 12px; background: var(--card2); padding: 2px 8px; border-radius: 6px; word-break: break-all; }
+.share-url { font-size: 12px; background: var(--card2); padding: 2px 8px; border-radius: 6px; word-break: break-all; cursor: text; user-select: all; }
 </style>

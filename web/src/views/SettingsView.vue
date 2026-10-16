@@ -123,6 +123,22 @@
         <span v-if="qMsg" :class="qOk ? 'ok-text' : 'err-text'" style="margin: 0">{{ qMsg }}</span>
       </div>
       <p class="hint" style="margin-bottom: 0">管理员账号不受次数限制，但用量（token）照样统计。</p>
+
+      <hr style="border: none; border-top: 1px solid var(--line); margin: 18px 0" />
+      <h3 style="margin-top: 0">公开访问地址（分享链接用）</h3>
+      <p class="hint" style="margin-top: 0">
+        生成分享链接时用它拼域名，例如 <code>http://alleyu.in1912.cn</code>。
+        <b>留空 = 用你当前浏览器地址栏的地址</b>——如果你是拿局域网 IP 或 localhost 打开后台，
+        复制出去的链接别人就打不开，这时才需要填这里。填了只影响之后新复制的链接（已有链接是纯 token，不受影响）。
+      </p>
+      <div style="display: flex; gap: 8px; max-width: 520px; align-items: end">
+        <div style="flex: 1">
+          <label class="fld">公开访问地址</label>
+          <input v-model="s.publicBase" class="input" placeholder="留空 = 跟随当前地址；例如 http://alleyu.in1912.cn" />
+        </div>
+        <button class="btn" @click="saveSys">保存</button>
+      </div>
+      <p v-if="sMsg" :class="sOk ? 'ok-text' : 'err-text'" style="margin: 8px 0 0; font-size: 13px">{{ sMsg }}</p>
     </div>
   </div>
 </template>
@@ -130,6 +146,7 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue';
 import { api } from '../api/index.js';
+import { copyText } from '../clipboard.js';
 
 const tab = ref('global');
 
@@ -147,6 +164,18 @@ const ngMsg = ref(''); const ngOk = ref(false); const ngBusy = ref(false);
 // 系统默认次数
 const q = reactive({ guide: '', journal: '' });
 const qMsg = ref(''); const qOk = ref(false);
+
+// 公开访问地址（v1.10.2）：拼分享链接用的域名，留空=跟随当前地址
+const s = reactive({ publicBase: '' });
+const sMsg = ref(''); const sOk = ref(false);
+async function saveSys() {
+  sMsg.value = '';
+  try {
+    await api('/settings', { method: 'PUT', body: { public_base_url: s.publicBase } });
+    sOk.value = true;
+    sMsg.value = '已保存（之后新复制的分享链接生效）';
+  } catch (e) { sOk.value = false; sMsg.value = e.message; }
+}
 
 async function loadInvites() {
   const j = await api('/invites');
@@ -177,9 +206,9 @@ async function delInvite(c) {
   } catch (e) { alert(e.message); }
 }
 function copy(code) {
-  navigator.clipboard?.writeText(code).then(
+  copyText(code).then(
     () => { ngOk.value = true; ngMsg.value = `已复制 ${code}`; },
-    () => { ngOk.value = false; ngMsg.value = '复制失败，请手动选中'; },
+    (e) => { ngOk.value = false; ngMsg.value = e.message; },
   );
 }
 async function saveQuota() {
@@ -242,6 +271,7 @@ onMounted(async () => {
   g.amapSet = !!st.amap_key_set;
   q.guide = st.quota_default_guide || '';
   q.journal = st.quota_default_journal || '';
+  s.publicBase = st.public_base_url || '';
   sys.value = await api('/system-info');
   await loadInvites();
 });

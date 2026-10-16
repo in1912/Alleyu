@@ -283,6 +283,67 @@ if (done && done.status === 'done') {
   const shareUrlText = (await page.locator('.share-row .share-url').first().innerText()).trim();
   ok(/\/#\/s\/[0-9a-f]{32}/.test(shareUrlText), '生成 32hex 分享链接（行内可见完整 URL）');
   await page.screenshot({ path: path.join(IMG_DIR, '分享.png'), fullPage: false });
+
+  // ---- v1.10.2：裸 HTTP 下的复制（线上 http://alleyu.in1912.cn 没有 navigator.clipboard）----
+  // 用户实测的报错：navigator.clipboard 是 undefined 时，旧代码直接写
+  // navigator.clipboard.writeText(...) → 当场抛 "Cannot read properties of undefined (reading 'writeText')"
+  // ——「生成分享链接」弹这句、「复制」按钮点了一点反应都没有（异常没人接）。
+  // 这里把 clipboard 抠掉（模拟非安全上下文），再把 execCommand / alert 换成探针，
+  // 验证真的回落到 textarea + execCommand('copy')，而且复制的内容就是那行链接。
+  await page.evaluate(() => {
+    window.__probe = { copied: [], alerts: [] };
+    window.__orig = {
+      exec: document.execCommand,
+      alert: window.alert,
+      clipDesc: Object.getOwnPropertyDescriptor(navigator, 'clipboard'),
+    };
+    try { Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true }); } catch { /* 已经是 undefined 更好 */ }
+    document.execCommand = (cmd) => {
+      const el = document.activeElement;
+      window.__probe.copied.push({ cmd, text: el && 'value' in el ? String(el.value) : '' });
+      return true;
+    };
+    window.alert = (m) => { window.__probe.alerts.push(String(m)); };
+  });
+  ok((await page.evaluate(() => typeof navigator.clipboard)) === 'undefined', '探针就位：navigator.clipboard 已被拿掉（等价于 http 页面里的 undefined）');
+  await page.locator('.share-row button').filter({ hasText: '复制' }).first().click();
+  await page.waitForTimeout(300);
+  const probe1 = await page.evaluate(() => window.__probe);
+  ok(probe1.copied.length === 1 && probe1.copied[0].cmd === 'copy', '无 clipboard 时「复制」回落到 execCommand(\'copy\')（不再抛 undefined.writeText）');
+  ok(probe1.copied[0].text === shareUrlText, '回落复制的内容就是那行分享链接（值没串、没截断）');
+  ok(probe1.alerts.length === 0, `复制过程不弹英文报错（alert 探针为空：${JSON.stringify(probe1.alerts)}）`);
+  ok((await page.locator('.dlg .hint').filter({ hasText: '已复制链接' }).count()) >= 1, '复制成功仍有中文反馈「已复制链接」');
+  // 再走一次「生成分享链接」：旧代码在这里是 alert 报错（复制那句在 try 里，异常被 catch 到 alert）
+  await page.locator('.dlg button').filter({ hasText: '生成分享链接' }).click();
+  await page.waitForFunction(() => document.querySelectorAll('.share-row').length === 2, null, { timeout: 6000 });
+  const probe2 = await page.evaluate(() => window.__probe);
+  ok(probe2.alerts.every((m) => !/undefined|writeText/i.test(m)), `生成链接不再弹英文异常（探针收到：${JSON.stringify(probe2.alerts)}）`);
+  ok(probe2.copied.length === 2, '第二次生成同样走回落复制（两条链接都复制成功）');
+  // 还原探针，别把后面的用例带进假环境
+  await page.evaluate(() => {
+    document.execCommand = window.__orig.exec;
+    window.alert = window.__orig.alert;
+    if (window.__orig.clipDesc) Object.defineProperty(navigator, 'clipboard', window.__orig.clipDesc);
+    else delete navigator.clipboard;
+  });
+  ok((await page.evaluate(() => typeof navigator.clipboard)) === 'object', '探针已还原（后续断言回到真实环境跑；也反证上面那条 undefined 是真的抠掉了）');
+
+  // ---- v1.10.2：公开访问地址（分享链接域名）----
+  // 拿局域网 IP / localhost 打开后台时，复制出去的链接别人打不开 → 管理员可配死域名。
+  const ahSet = { Authorization: 'Bearer ' + tk, 'Content-Type': 'application/json' };
+  const setBefore = await fetch(URL_BASE + '/api/settings', { headers: ahSet }).then((r) => r.json());
+  await fetch(URL_BASE + '/api/settings', { method: 'PUT', headers: ahSet, body: JSON.stringify({ public_base_url: 'http://alleyu.in1912.cn' }) });
+  await page.locator('.dlg button').filter({ hasText: '关闭' }).click();
+  await page.goto(URL_BASE + '/#/guide/' + genRes.id);
+  await page.waitForSelector('.gv-head button', { timeout: 8000 });
+  await page.locator('.gv-head button').filter({ hasText: '分享' }).click();
+  await page.waitForSelector('.share-row', { timeout: 6000 });
+  const basedUrl = (await page.locator('.share-row .share-url').first().innerText()).trim();
+  ok(basedUrl.startsWith('http://alleyu.in1912.cn/#/s/'), `配了公开访问地址 → 链接照它拼（${basedUrl.slice(0, 42)}…）`);
+  ok((await page.locator('.share-row a').filter({ hasText: '打开' }).first().getAttribute('href')) === basedUrl, '链接行「打开」按钮指向同一地址（点开就能验证链接通不通）');
+  await fetch(URL_BASE + '/api/settings', { method: 'PUT', headers: ahSet, body: JSON.stringify({ public_base_url: setBefore.public_base_url || '' }) });
+  const setAfter = await fetch(URL_BASE + '/api/settings', { headers: ahSet }).then((r) => r.json());
+  ok((setAfter.public_base_url || '') === (setBefore.public_base_url || ''), `公开访问地址用后还原（原值「${setBefore.public_base_url || '空'}」，不给真实库留自检残留）`);
   await page.locator('.dlg button').filter({ hasText: '关闭' }).click();
 
   // 编辑模式：改 Markdown 原文并保存
@@ -651,6 +712,14 @@ ok(!!mine && mine.code === inviteCode, '收尾定位到自己生成的邀请码�
 rInviteId = (mine || {}).id || 0;
 if (!rInviteId) console.log('  ⚠️ 没定位到自检码，真实库里可能留了一条备注为「' + INV_NOTE + '」的邀请码，请手工删');
 
+// v1.10.2：设置 → 系统 里的「公开访问地址」（分享链接域名）
+await page.locator('.tabs .t').filter({ hasText: '系统' }).click();
+const baseInput = page.locator('input[placeholder^="留空 = 跟随当前地址"]');
+await baseInput.waitFor({ timeout: 6000 });
+ok((await baseInput.count()) === 1, '设置→系统 有「公开访问地址」输入框（分享链接域名）');
+const sysSettings = await fetch(URL_BASE + '/api/settings', { headers: ah }).then((r) => r.json());
+ok((await baseInput.inputValue()) === (sysSettings.public_base_url || ''), `输入框载入的是库里存的值（当前「${sysSettings.public_base_url || '空 = 跟随当前地址'}」，不是写死的占位）`);
+
 // 用户管理列表：次数列 + 累计 token 列（管理员自己也在列表里）
 await page.goto(URL_BASE + '/#/users');
 await page.waitForSelector('table.tb thead th', { timeout: 8000 });
@@ -743,6 +812,13 @@ ok(/游记剩余：1次/.test(jQuota), `写游记页给用户看剩余次数（$
 await uctx.close();
 
 // 收尾：把 render 自己造的邀请码与用户从真实库里删掉（别留自检垃圾）
+// v1.10.2：攻略也一并删——以前只删游记，真实库里攒了 5 篇桩攻略（id 111~115：111~113 挂在管理员名下、
+//          114/115 的作者账号已删），用户看到列表里一堆「杭州 3 天」的假数据。
+if (genRes && genRes.id) {
+  const d = await fetch(URL_BASE + '/api/guides/' + genRes.id, { method: 'DELETE', headers: ah });
+  console.log(`  （清理 render 生成的攻略 #${genRes.id}：HTTP ${d.status}）`);
+  if (!d.ok) console.log(`  ⚠️ 没删掉，手工删 guides 里 id=${genRes.id} 这一行`);
+}
 if (rInviteId) {
   const d = await fetch(URL_BASE + '/api/invites/' + rInviteId, { method: 'DELETE', headers: ah });
   console.log(`  （清理 render 生成的邀请码 ${inviteCode}：HTTP ${d.status}）`);

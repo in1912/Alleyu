@@ -16,7 +16,7 @@
     <div class="home-wrap">
       <RiderScene ref="riderRef" />
       <h1 class="home-title">游巷</h1>
-      <p class="home-sub">输入一个目的地，乳白小兔骑车带你去 —— 每敲一个字，它就兔跳一下 🐰</p>
+      <p class="home-sub">输入一个目的地，小兔骑车带你去 —— 每敲一个字，它就兔跳一下 🐰</p>
 
       <div class="searchbar">
         <input
@@ -51,6 +51,11 @@
         游客可以看首页；<a href="#/login" style="color: var(--acc-d)">登录</a> 后可以生成 AI 攻略、写游记、看地图与天气。
       </p>
     </div>
+
+    <!-- v1.10.1：底部 ICP 备案号（页面是浅灰绿底，用 --mut 灰绿小字；纯白在这个底色上看不见） -->
+    <p class="beian">
+      <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">浙ICP备2026080083号-1</a>
+    </p>
   </div>
 </template>
 
@@ -147,4 +152,9 @@ onMounted(async () => {
 .corner .who { font-size: 13px; color: var(--mut); }
 /* .go 基础样式是绝对定位 right:6px——第二个按钮必须错开，否则叠在「做攻略」上（render 抓出的真 bug） */
 .journal-go { background: #fff; color: var(--acc-d); border: 1px solid var(--acc-d); right: 110px; }
+/* 备案号：.home-page 是 flex 行容器，直接把 <p> 放进流里会跟 .home-wrap 并排——必须绝对定位到底部
+   （容器已有 padding-bottom:46px 给它留位） */
+.beian { position: absolute; left: 0; right: 0; bottom: 14px; margin: 0; text-align: center; font-size: 12px; }
+.beian a { color: var(--mut); }
+.beian a:hover { color: var(--acc-d); }
 </style>

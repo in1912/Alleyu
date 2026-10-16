@@ -51,6 +51,29 @@ if (!process.env.ALLEYU_URL) {
 const IMG_DIR = path.join(ROOT, 'img');
 if (!fs.existsSync(IMG_DIR)) fs.mkdirSync(IMG_DIR, { recursive: true });
 
+// v1.10.1：自检不再拿真实库里的管理员登录。
+//  起因：真实库 admin 的密码是**用户自己的**（他随时会在「账号」页改掉），一改 render 就红在第一步。
+//  做法：自检自建一个专用管理员 render_admin，跑完（含中途崩溃）删掉——真实账号一个都不碰。
+const RENDER_ADMIN = 'render_admin';
+const RENDER_ADMIN_PWD = 'render-admin-2026';
+const db = require(path.join(ROOT, 'server', 'db.js')).db;
+function dropRenderAdmin() {
+  try {
+    db.prepare('DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE username=?)').run(RENDER_ADMIN);
+    db.prepare('DELETE FROM users WHERE username=?').run(RENDER_ADMIN);
+  } catch { /* 退出阶段别抛 */ }
+}
+{
+  const { randomBytes, scryptSync } = require('node:crypto');
+  const salt = randomBytes(16).toString('hex');
+  const hash = scryptSync(RENDER_ADMIN_PWD, salt, 64).toString('hex');
+  db.prepare(`INSERT INTO users(username,password_hash,role,display_name,can_use_ai,allowed_pages)
+              VALUES(?,?, 'admin', '渲染自检', 1, '[]')
+              ON CONFLICT(username) DO UPDATE SET password_hash=excluded.password_hash, role='admin', can_use_ai=1`)
+    .run(RENDER_ADMIN, `${salt}:${hash}`);
+  process.on('exit', dropRenderAdmin);
+}
+
 let pass = 0, fail = 0;
 const ok = (c, n) => { if (c) { pass++; console.log('  ✅ ' + n); } else { fail++; console.log('  ❌ ' + n); } };
 
@@ -61,8 +84,8 @@ const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 await page.goto(URL_BASE + '/#/login');
 const noPlaceholder = await page.locator('input[placeholder="用户名"], input[placeholder="密码"]').count();
 ok(noPlaceholder === 0, '登录框无用户名/密码占位提示');
-await page.fill('input[aria-label="用户名"]', 'admin');
-await page.fill('input[aria-label="密码"]', 'admin123');
+await page.fill('input[aria-label="用户名"]', RENDER_ADMIN);
+await page.fill('input[aria-label="密码"]', RENDER_ADMIN_PWD);
 await page.click('button.btn');
 await page.waitForURL('**/#/', { timeout: 8000 });
 ok(true, '登录成功跳首页');
@@ -102,6 +125,11 @@ await page.fill('.searchbar input', '杭州');
 await page.waitForTimeout(600);
 const sugCount = await page.locator('.sug .s').count();
 ok(sugCount >= 1, '边查边搜城市建议');
+// v1.10.1：底部 ICP 备案号（首页）
+const beian = page.locator('.beian a').first();
+ok((await beian.innerText()).trim() === '浙ICP备2026080083号-1', '首页底部挂上备案号');
+ok((await beian.getAttribute('href')) === 'https://beian.miit.gov.cn/' && (await beian.getAttribute('target')) === '_blank',
+  '备案号指向工信部且新窗口打开');
 await page.screenshot({ path: path.join(IMG_DIR, '首页.png'), fullPage: false });
 await page.click('.searchbar .go');
 await page.waitForURL('**/#/plan**', { timeout: 8000 });
@@ -567,6 +595,11 @@ await upage.goto(URL_BASE + '/#/register');
 await upage.waitForSelector('.dlg-card', { timeout: 8000 });
 ok((await upage.locator('.dlg-card input').count()) === 5, '注册页五项表单（邮箱/昵称/用户名/密码/邀请码）');
 ok(!(await upage.locator('.dlg-card button.btn').isDisabled()), '库里有可用码 → 注册按钮可点（register-open=true）');
+// v1.10.1：底部 ICP 备案号（注册页）
+const rbeian = upage.locator('.beian a').first();
+ok((await rbeian.innerText()).trim() === '浙ICP备2026080083号-1', '注册页底部挂上备案号');
+ok((await rbeian.getAttribute('href')) === 'https://beian.miit.gov.cn/' && (await rbeian.getAttribute('target')) === '_blank',
+  '注册页备案号指向工信部且新窗口打开');
 await upage.screenshot({ path: path.join(IMG_DIR, '注册.png'), fullPage: false });
 await upage.locator('.dlg-card button.btn').click();
 ok((await upage.locator('.dlg-card .err-text').last().innerText()).includes('请填写邮箱'), '空提交：客户端先拦「请填写邮箱」（五项都必填）');
@@ -670,6 +703,10 @@ ok((await gpage.locator('.split .left svg').count()) >= 1, '登录页左 2/3 骑
 ok((await gpage.locator('.split .left .brand h1').innerText()).includes('游巷'), '登录页左下品牌字');
 ok((await gpage.locator('.split .right .dlg-card').count()) === 1, '登录页右 1/3 登录框');
 ok((await gpage.locator('.dlg-card button').filter({ hasText: '注册' }).count()) === 1, '登录页登录按钮下方有「注册」按钮');
+// v1.10.1：底部 ICP 备案号（登录页）
+const lbeian = gpage.locator('.beian a').first();
+ok((await lbeian.innerText()).trim() === '浙ICP备2026080083号-1', '登录页底部挂上备案号');
+ok((await lbeian.getAttribute('href')) === 'https://beian.miit.gov.cn/', '登录页备案号指向工信部');
 await gpage.screenshot({ path: path.join(IMG_DIR, '登录页.png'), fullPage: false });
 await gpage.locator('.dlg-card button').filter({ hasText: '注册' }).click();
 await gpage.waitForURL('**/#/register', { timeout: 6000 });

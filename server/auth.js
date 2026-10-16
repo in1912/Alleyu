@@ -121,7 +121,9 @@ function initAdmin() {
   cleanupSessions();
   const count = db.prepare('SELECT COUNT(*) c FROM users').get().c;
   if (count === 0) {
-    const uname = process.env.DEFAULT_ADMIN || 'admin';
+    // v1.10.1：默认管理员账号名由 admin 改成 wpqadmin（用户指定；密码仍是 admin123，
+    // 部署后请立刻改。只对**空库首次启动**生效，老库改名走 UPDATE，不在这里处理）
+    const uname = process.env.DEFAULT_ADMIN || 'wpqadmin';
     const upass = process.env.DEFAULT_ADMIN_PASSWORD || 'admin123';
     db.prepare("INSERT INTO users(username,password_hash,role,can_use_ai,allowed_pages) VALUES(?,?,?,1,'[]')")
       .run(uname, hashPassword(upass), 'admin');

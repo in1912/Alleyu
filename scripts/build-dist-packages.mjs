@@ -73,7 +73,7 @@ function deployNote(variant) {
     `游巷 v${VERSION}（${variant} 版）`,
     '',
     '本包不含任何历史个人数据：data/ 是空目录，首次启动自动建库。',
-    '首次登录：admin / admin123 —— 登录后请立刻在「设置 → 用户管理」里改掉。',
+    '首次登录：wpqadmin / admin123 —— 登录后请立刻在「设置 → 用户管理」里改掉。',
     '',
     '原图照片、地图缓存、AI Key 与高德 Key 都在 data/ 里，换机器整个 data/ 拷过去即可。',
     '',

@@ -44,6 +44,12 @@
         </div>
       </div>
     </div>
+
+    <!-- v1.10.1：底部 ICP 备案号（与登录页同款；.split 是 min-height:100vh，必须绝对定位到页外）
+         颜色用 --mut 灰绿——页面是浅灰绿底，纯白小字在这里看不见 -->
+    <p class="beian">
+      <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">浙ICP备2026080083号-1</a>
+    </p>
   </div>
 </template>
 
@@ -97,8 +103,12 @@ onMounted(async () => {
 <style scoped>
 .login-page {
   min-height: 100vh;
+  position: relative;
   background: linear-gradient(180deg, #edf1ea 0%, #e3e9e0 100%);
 }
+.beian { position: absolute; left: 0; right: 0; bottom: 10px; margin: 0; text-align: center; font-size: 12px; }
+.beian a { color: var(--mut); }
+.beian a:hover { color: var(--acc-d); }
 .split { display: grid; grid-template-columns: 2fr 1fr; min-height: 100vh; }
 .left { position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden; }
 .left .brand { position: absolute; left: 34px; bottom: 26px; }

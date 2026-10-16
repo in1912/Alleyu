@@ -89,12 +89,12 @@ try {
   console.log('== 鉴权与免登录通道 ==');
   let r = await req('/api/cities');
   ok(r.status === 401, '未登录访问业务接口 401');
-  r = await req('/api/auth/login', { method: 'POST', body: { username: 'admin', password: 'wrong' } });
+  r = await req('/api/auth/login', { method: 'POST', body: { username: 'wpqadmin', password: 'wrong' } });
   ok(r.status === 401, '错误密码 401');
-  r = await req('/api/auth/login', { method: 'POST', body: { username: 'admin', password: 'admin123' } });
+  r = await req('/api/auth/login', { method: 'POST', body: { username: 'wpqadmin', password: 'admin123' } });
   ok(r.status === 200 && r.j.token, 'admin 登录');
   const admin = r.j.token;
-  r = await req('/api/auth/login', { method: 'POST', body: { username: 'admin', password: 'admin123' } });
+  r = await req('/api/auth/login', { method: 'POST', body: { username: 'wpqadmin', password: 'admin123' } });
   const admin2 = r.j.token;
   r = await req('/api/amap/mapimg/deadbeefdeadbeefdeadbeef.png');
   ok(r.status === 404, 'EXEMPT：免登录图片直链（不存在→404 而非 401）');

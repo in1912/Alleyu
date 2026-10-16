@@ -109,6 +109,22 @@ node scripts/build-upgrade-pack.mjs        # 或 npm run pack:upgrade
 2. 把里面的 `server/**`、`package.json`、`web/dist/.latest` 按原相对路径拷回部署目录覆盖。
 3. 重启 `node`。
 
+### 从开发机一条命令推过去
+
+界面上的升级适合「人就在浏览器前」的场景；如果你希望发版时直接从开发机推：
+
+```bash
+# 只预检（一个字节都不写）
+ALLEYU_ADMIN_USER=<管理员> ALLEYU_ADMIN_PASS=<密码> node scripts/push-upgrade.mjs
+
+# 真升级（预检 → 应用 → 等它自己重启 → 硬验证）
+ALLEYU_ADMIN_USER=<管理员> ALLEYU_ADMIN_PASS=<密码> node scripts/push-upgrade.mjs --apply
+```
+
+`--pack` 指定包（默认取仓库根最新的 `游巷-*-upgrade.zip`）、`--url` 指定站点（默认 `ALLEYU_URL`，再默认 `http://alleyu.in1912.cn`）、`--allow-dep-change` 放行依赖变化、`--timeout` 改等重启的秒数（默认 120）。凭证**只从环境变量读**，脚本不回显密码与 token；预检不过或包不比现役新（`STALE_DIST`）会当场停下并把服务端的原话打出来。
+
+最后一步是**硬验证**：它不只比版本号，还会拉线上首页、把入口 `assets/index-<hash>.js` 与包内 `index.html` 的入口 chunk 名逐字比对——版本号只能证明 `package.json` 换了，入口 chunk 名才证明**新前端真的在服务**（对不上会明确报错，不当作升级成功）。
+
 ### nginx / 排查
 
 - **上传通道**：升级包走的是 `POST /api/upgrade/plan` 的原始二进制体（不是 multipart/表单），反代要放开体大小：`client_max_body_size 64m;`（和 `ALLEYU_UPGRADE_MAX_MB` 同口径）。没放开的话上传会得到 413，页面会直接说「升级包超过上传上限」而不是让你猜。进程本身**不收**表单，也没有引入任何新依赖——zip 编解码是项目自带的小实现。
@@ -181,6 +197,7 @@ scripts/
   check-alleyu.mjs        API 自检（--online 加真实外网断言）
   render-alleyu.mjs       Playwright 渲染自检 + 截图
   build-upgrade-pack.mjs  打在线升级包（版本号取 package.json）
+  push-upgrade.mjs        从开发机把包推到在跑的站点（凭证只走环境变量；末尾比入口 chunk 硬验证）
   verify-upgrade-restart.mjs 「升级→自动重启→新版本真在跑」的真机演练（会真起进程，只杀自己的）
 ```
 

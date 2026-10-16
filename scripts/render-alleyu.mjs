@@ -37,7 +37,9 @@ if (!process.env.ALLEYU_URL) {
     cwd: ROOT,
     // ALLEYU_NO_RESTART=1：render 跑在真实仓库根上，万一有人手滑点了「应用升级并重启」，
     // 至少不会有进程被换掉（文件仍会被写——所以下面的用例只预检、绝不点应用）
-    env: { ...process.env, ALLEYU_AI_FORCE_STUB: '1', ALLEYU_NO_RESTART: '1' },
+    // ALLEYU_WIKI_TIMEOUT_MS=1500（v1.11.1）：库页那个「🔌 测试维基连通」是**只读**探针，
+    //   但它要真问一次维基。压到 1.5 秒是为了让断言「点完很快出结论」不受国内网络长短影响。
+    env: { ...process.env, ALLEYU_AI_FORCE_STUB: '1', ALLEYU_NO_RESTART: '1', ALLEYU_WIKI_TIMEOUT_MS: '1500' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   server.stdout.on('data', () => {}); // 必须消费，防管道写满阻塞子进程
@@ -569,6 +571,29 @@ ok(/跳过/.test((await bfAllBtn.first().getAttribute('title')) || ''), '批量�
 const libTail = await page.locator('.card .hint').last().innerText();
 ok(/一个景点都没有/.test(libTail) && /跳过/.test(libTail), '页脚说明写明只补「一个景点都没有」的城市、已有景点的一律跳过');
 await page.screenshot({ path: path.join(IMG_DIR, '城市景点库-景点.png'), fullPage: false });
+
+// v1.11.1：只读的「🔌 测试维基连通」——「介绍补不上」到底是连不上还是真没条目，一点就知道。
+// 注意：**只点这个只读探针，绝不点补全按钮**（render 跑在真实 data/ 库上，补全会真写库、真拉外网）。
+// 也不断言"一定连不上"——用户挂代理跑自检时它就该是「可达」，这里只断言「8 秒内必定有结论」。
+const probeBtn = page.locator('button', { hasText: '测试维基连通' });
+ok((await probeBtn.count()) === 1, '景点页签有只读的「测试维基连通」按钮');
+const tProbe = Date.now();
+await probeBtn.first().click();
+let probeTxt = '';
+// 两个坑（v1.11.1 第一次跑自己踩的，render 被卡了 20 分钟）：
+// ①结论行是 `v-if="backfillMsg"`，**点击前根本不存在** → `innerText()` 每次白等 30 秒才抛；必须先 count() 再看；
+// ②循环条件带时钟，无论页面怎么变都在 9 秒内退出（这条断言的语义本来就是「9 秒内必出结论」）。
+for (let i = 0; i < 60 && !probeTxt && Date.now() - tProbe < 9000; i++) {
+  await page.waitForTimeout(200);
+  const msg = page.locator('.backfill-msg').first();
+  if ((await msg.count()) === 0) continue;
+  const txt = (await msg.innerText({ timeout: 2000 }).catch(() => '')).trim();
+  if (/可达|连不上/.test(txt)) probeTxt = txt;
+}
+ok(!!probeTxt && Date.now() - tProbe < 9000,
+  `连通探针 ${((Date.now() - tProbe) / 1000).toFixed(1)}s 内给出结论（不再是一个字不动）`, probeTxt.slice(0, 80));
+ok(/维基旅行/.test(probeTxt) && /维基百科/.test(probeTxt), '结论行点名两家站点（排障时知道是哪家不通）', probeTxt.slice(0, 80));
+await page.screenshot({ path: path.join(IMG_DIR, '城市景点库-维基连通.png'), fullPage: false });
 
 // 攻略页（桩数据若在）
 await page.goto(URL_BASE + '/#/history');

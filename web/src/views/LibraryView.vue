@@ -67,7 +67,9 @@
         <button class="btn sm" :disabled="!curCity" :title="curCity ? '' : '先选城市'" @click="attrDlg = { ...emptyAttr, city_id: curCity }">＋ 新增景点</button>
         <button v-if="isAdmin" class="btn ghost sm" :disabled="!curCity" @click="poiOpen = !poiOpen">🔍 高德检索导入</button>
         <button v-if="isAdmin" class="btn ghost sm" :disabled="!curCity || backfillBusy" @click="backfillCity">⚡ 一键补全本城市</button>
-        <button v-if="isAdmin" class="btn ghost sm" :disabled="backfillBusy" title="只处理一个景点都没有的国内城市；已有景点的城市一律跳过，不重复拉取" @click="backfillAll">🔄 补全全部缺景点城市</button>
+        <button v-if="isAdmin" class="btn ghost sm" :disabled="backfillBusy" title="只处理一个景点都没有的国内城市；已有景点的城市一律跳过，不重复拉取；维基介绍连不上时会如实报错并跳过，不会再卡住" @click="backfillAll">🔄 补全全部缺景点城市</button>
+        <button v-if="isAdmin && backfillBusy" class="btn ghost sm" @click="backfillStop = true">■ 停止</button>
+        <button v-if="isAdmin" class="btn ghost sm" :disabled="backfillBusy || probeBusy" title="只读检测：这台服务器现在能不能连上维基（不写任何数据）——「介绍补不上」到底是连不上还是没有条目，一点就知道" @click="probeWiki">🔌 测试维基连通</button>
       </div>
 
       <div v-if="poiOpen" style="margin-bottom: 14px; padding: 12px; background: var(--card2); border-radius: 10px">
@@ -81,7 +83,9 @@
         </div>
       </div>
 
-      <p v-if="backfillMsg" class="hint" style="margin: 0 0 10px">{{ backfillMsg }}</p>
+      <p v-if="backfillMsg" class="hint backfill-msg" style="margin: 0 0 10px">
+        {{ backfillMsg }}<span v-if="backfillBusy" style="margin-left: 6px; color: var(--mut)">· 已用 {{ backfillSec }} 秒</span>
+      </p>
 
       <div v-if="!pager.total && !attrLoading" class="empty">没有匹配的景点{{ curCity ? '' : '（未选城市时展示全部，可按线路/城市/名字筛选）' }}</div>
       <table v-else class="tb">
@@ -113,7 +117,7 @@
         <span class="hint">第 {{ pager.page }} / {{ pager.pages }} 页 · 共 {{ pager.total }} 条</span>
         <button class="btn ghost sm" :disabled="pager.page >= pager.pages" @click="goPage(pager.page + 1)">下一页 →</button>
       </div>
-      <p class="hint" style="margin-top: 10px">未选城市时默认展示全部景点（可前后翻页）；「一键补全」= 高德风景名胜检索导入 + 维基旅行/维基百科补介绍（含 CC BY-SA 署名）。坐标为空的景点生成攻略时自动经高德解析。景点所有登录用户都可新增/修改，删除仅管理员。<br />「🔄 补全全部缺景点城市」只处理<b>一个景点都没有</b>的国内城市（已有景点的一律跳过、不重复拉取）；「拉取旅游城市」在<b>城市</b>页签，按线路把内置种子里库里还缺的城市补进来。</p>
+      <p class="hint" style="margin-top: 10px">未选城市时默认展示全部景点（可前后翻页）；「一键补全」= 高德风景名胜检索导入 + 维基旅行/维基百科补介绍（含 CC BY-SA 署名）。坐标为空的景点生成攻略时自动经高德解析。景点所有登录用户都可新增/修改，删除仅管理员。<br />「🔄 补全全部缺景点城市」只处理<b>一个景点都没有</b>的国内城市（已有景点的一律跳过、不重复拉取）；「拉取旅游城市」在<b>城市</b>页签，按线路把内置种子里库里还缺的城市补进来。<br />介绍来自境外维基站点，<b>国内网络常常连不上</b>——那时「补介绍」会如实说连不上并跳过（每座城市十几秒内必有结果，不会一直转），景点本身照常导入；要点「🔌 测试维基连通」可当场确认是连不上还是真的没有条目。</p>
     </div>
 
     <!-- 城市弹窗 -->
@@ -170,7 +174,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { api } from '../api/index.js';
 
 const TYPES = ['人文', '自然风光', '美食', '逛街', '休闲', '拍照打卡', '亲子', '景点'];
@@ -192,6 +196,22 @@ const attractions = ref([]);
 const attrLoading = ref(false);
 const backfillMsg = ref('');
 const backfillBusy = ref(false);
+// v1.11.1：下面三件都是为了让「正在跑」看得见、停得下——
+// 老版本的毛病是点了批量补全之后界面一个字都不动（服务端在为一个请求空转 20 分钟），
+// 用户没法区分「在跑」和「死了」。
+const backfillStop = ref(false); // 「■ 停止」：在轮次/城市之间检查，不打断正在飞的那个请求
+const backfillSec = ref(0);
+const probeBusy = ref(false);
+let backfillTimer = 0;
+function backfillStart() {
+  backfillBusy.value = true; backfillStop.value = false; backfillSec.value = 0;
+  clearInterval(backfillTimer);
+  backfillTimer = setInterval(() => { backfillSec.value++; }, 1000);
+}
+function backfillDone() {
+  backfillBusy.value = false;
+  clearInterval(backfillTimer); backfillTimer = 0;
+}
 
 // 城市下拉按线路过滤；全部线路时给全部城市（用 citiesAll，不是城市页签筛选后的 cities）
 const cityOptions = computed(() => attrLine.value ? citiesAll.value.filter((c) => (c.line || '国内') === attrLine.value) : citiesAll.value);
@@ -335,7 +355,9 @@ async function importPoi(p) {
     loadAttrs();
   } catch (e) { alert(e.message); }
 }
-// 单个景点补维基介绍（行内「介」按钮）
+// 单个景点补维基介绍（行内「介」按钮）。
+// v1.11.1：服务端现在会区分「维基连不上」和「两家都没这条」——前者回 502 并说清是网络问题，
+// 这里照抄它的原话，绝不再把连不上说成「暂无条目」。
 async function enrichIntro(a) {
   backfillMsg.value = `正在抓取「${a.name}」的介绍…`;
   try {
@@ -344,25 +366,68 @@ async function enrichIntro(a) {
     loadAttrs();
   } catch (e) { backfillMsg.value = '介绍抓取失败：' + e.message; }
 }
+// 只读连通探针：分清「维基连不上」和「景点没条目」。服务端不写库。
+async function probeWiki() {
+  probeBusy.value = true;
+  backfillMsg.value = '正在测维基连通（只读，不写任何数据）…';
+  try {
+    const j = await api('/wiki/probe');
+    const seg = (j.sites || []).map((s) => `${s.label} ${s.ok ? `可达（${s.ms}ms）` : (s.error || `连不上（${s.ms}ms）`)}`);
+    backfillMsg.value = `维基连通：${seg.join('；')} → ${j.reachable
+      ? '至少一家可达，景点介绍能抓'
+      : '两家都连不上（这台服务器访问不到境外维基），介绍抓不了——这不是「景点没条目」'}`;
+  } catch (e) { backfillMsg.value = '连通探测失败：' + e.message; }
+  finally { probeBusy.value = false; }
+}
+// 单城补全的**轮次驱动**（v1.11.1）：服务端的介绍段有「时间预算」（每次请求最多十几秒必返回），
+// 没补完的部分由前端接着点，不再要求用户自己「再点一次继续」。
+// 第 2 轮起带 only_intro（只补介绍，不重复跑高德）；skipIntro=维基整片连不上时只导入景点。
+// 返回 { parts, wikiDown, imported, introOk, introLeft }。
+async function runBackfillCity(city, { skipIntro = false } = {}) {
+  let imported = 0, skipped = 0, introOk = 0, introMiss = 0, introLeft = 0, wikiDown = false, rounds = 0;
+  const errs = [];        // 服务端如实说的介绍段情况（连不上/预算用尽…），随 parts 一起给人看
+  const hardErrs = [];    // 这一城**整个请求失败**（网络/HTTP/服务端 500）——调用方要按失败计数，不能算成功
+  try {
+    for (;;) {
+      const body = rounds === 0 ? (skipIntro ? { skip_intro: true } : undefined) : { only_intro: true };
+      const j = await api('/cities/' + city.id + '/backfill', { method: 'POST', body });
+      rounds++;
+      imported += j.imported || 0;
+      skipped += j.skipped || 0;
+      introOk += j.intro_ok || 0;
+      introMiss += j.intro_miss || 0;
+      introLeft = j.intro_left || 0;
+      if (j.intro_error) errs.push(j.intro_error);
+      if (j.wiki_unreachable) { wikiDown = true; break; }
+      // 继续的条件：还有没补的 **且** 这一轮真补到了东西（全 miss 说明剩下的大概率本来就没条目，
+      // 再点只是把同样的 40 条重查一遍）；最多 3 轮，并且尊重「■ 停止」。
+      if (!(introLeft > 0 && (j.intro_ok || 0) > 0 && rounds < 3)) break;
+      if (backfillStop.value) break;
+    }
+  } catch (e) { hardErrs.push(e.message); }
+  const parts = [`导入 ${imported} 条${skipped ? `（重复跳过 ${skipped}）` : ''}`];
+  if (skipIntro) parts.push('介绍本次跳过（维基连不上）');
+  else parts.push(`补介绍 ${introOk} 条${introMiss ? `，维基无条目 ${introMiss}` : ''}`);
+  if (introLeft && !skipIntro) parts.push(`还剩 ${introLeft} 条未补`);
+  if (errs.length) parts.push('⚠️ ' + [...new Set(errs)].join('；'));
+  if (hardErrs.length) parts.push('❌ 失败：' + hardErrs.join('；'));
+  return { parts, wikiDown, imported, introOk, introLeft, hardErrs };
+}
 // 一键补全当前城市：高德风景名胜导入 + 缺介绍的补维基
 async function backfillCity() {
   const city = citiesAll.value.find((c) => c.id === curCity.value) || cities.value.find((c) => c.id === curCity.value);
   if (!city) return;
-  if (!confirm(`补全「${city.name}」？\n国内城市：高德「风景名胜」检索导入（最多50条）+ 全市景点补维基介绍；国际城市只补介绍。\n串行执行约 10~30 秒，期间请勿关页。`)) return;
-  backfillBusy.value = true;
-  backfillMsg.value = `正在补全「${city.name}」…（高德导入 + 维基介绍，串行约 10~30 秒）`;
+  if (!confirm(`补全「${city.name}」？\n国内城市：高德「风景名胜」检索导入（最多50条）+ 全市景点补维基介绍；国际城市只补介绍。\n每座城市十几秒内必有结果（维基连不上会如实报错，不会一直转）。`)) return;
+  backfillStart();
+  backfillMsg.value = `正在补全「${city.name}」…（高德导入 + 维基介绍）`;
   try {
-    const j = await api('/cities/' + city.id + '/backfill', { method: 'POST' });
-    const parts = [];
-    parts.push(`导入 ${j.imported} 条（重复跳过 ${j.skipped}）`);
-    parts.push(`补介绍 ${j.intro_ok} 条${j.intro_miss ? `，无条目 ${j.intro_miss}` : ''}${j.intro_left ? `，剩 ${j.intro_left} 条未补（再点一次继续）` : ''}`);
-    if (j.intro_error) parts.push(`⚠️ ${j.intro_error}`);
-    backfillMsg.value = `「${j.city}」补全完成：${parts.join('；')}`;
+    const j = await runBackfillCity(city, {});
+    backfillMsg.value = `「${city.name}」补全完成：${j.parts.join('；')}`;
     loadAttrs();
   } catch (e) {
     backfillMsg.value = '补全失败：' + e.message;
   } finally {
-    backfillBusy.value = false;
+    backfillDone();
   }
 }
 // v1.10.1：各线路「拉取旅游城市」（管理员）——服务端按线路把内置种子里「库里还没有」的城市补进来。
@@ -395,31 +460,55 @@ async function pullLine(s) {
 }
 // 批量：给「一个景点都没有」的国内城市逐个补全（v1.10.1 起：**有景点的城市一律跳过、不重复拉取**；
 // 要给某座已有景点的城市加量，用上面的「一键补全本城市」）。前端串行驱动，能看进度也能随时停。
+// v1.11.1：① 单城失败**必须说出来**（老版本 catch{} 把失败全吞了，用户只看到一句「完成：0/5」）；
+//          ② 连续 2 座报「维基连不上」→ 认定维基整片不可达，后续城市只导入景点（省掉每城十几秒的
+//             白等），并在结束语里如实说明「介绍没补、因为连不上，不是没有条目」。
 async function backfillAll() {
   const list = citiesAll.value.filter((c) => (c.line || '国内') === '国内' && (cityAttrCount[c.id] ?? 0) === 0);
   if (!list.length) { backfillMsg.value = '没有「零景点」的国内城市了（已有景点的城市一律跳过，不重复拉取；要给某座城市加量请用「一键补全本城市」）'; return; }
-  if (!confirm(`将补全 ${list.length} 座「零景点」国内城市（高德风景名胜导入+维基介绍），已有景点的城市一律跳过、不重复拉取。\n串行执行约 ${Math.ceil(list.length * 0.4)} 分钟，期间请勿关页。`)) return;
-  backfillBusy.value = true;
-  let ok = 0;
+  if (!confirm(`将补全 ${list.length} 座「零景点」国内城市（高德风景名胜导入 + 维基介绍），已有景点的城市一律跳过、不重复拉取。\n每座城市十几秒内必有结果；维基连不上会如实告知并跳过介绍，不会再卡住。`)) return;
+  backfillStart();
+  let done = 0, imported = 0, introOk = 0, leftTotal = 0, wikiFail = 0, wikiDown = false, stopped = false;
+  const errs = [];
   try {
     for (let i = 0; i < list.length; i++) {
+      if (backfillStop.value) { stopped = true; break; }
       const c = list[i];
-      backfillMsg.value = `批量补全 ${i + 1}/${list.length}：${c.name}…`;
+      backfillMsg.value = `批量补全 ${i + 1}/${list.length}：${c.name}${wikiDown ? '（只导入景点）' : ''}…`;
       try {
-        await api('/cities/' + c.id + '/backfill', { method: 'POST' });
-        ok++;
-      } catch { /* 单城失败继续下一城 */ }
+        const j = await runBackfillCity(c, { skipIntro: wikiDown });
+        // 这一城整个请求失败（runBackfillCity 把异常收进 hardErrs）就**不能算「处理成功」**——
+        // 老版本正是在这里把失败吞成「完成：0/5」，用户只看到一句没头没尾的结论。
+        if (j.hardErrs.length) errs.push(`${c.name}：${j.hardErrs.join('；')}`);
+        else done++;
+        imported += j.imported;
+        introOk += j.introOk;
+        leftTotal += j.introLeft;
+        if (j.wikiDown) { wikiFail++; if (wikiFail >= 2) wikiDown = true; } else wikiFail = 0;
+      } catch (e) {
+        errs.push(`${c.name}：${e.message}`); // 兜底：单城失败继续下一城，但要说出来，不再吞掉
+      }
     }
-    backfillMsg.value = `批量补全完成：${ok}/${list.length} 座城市处理成功`;
+    const msg = [`批量补全${stopped ? '已停止' : '完成'}：${done}/${list.length} 座城市处理成功（景点导入 ${imported} 条）`];
+    if (introOk) msg.push(`补介绍 ${introOk} 条`);
+    if (leftTotal > 0) {
+      msg.push(wikiDown
+        ? `维基连不上（境外站点，这台服务器访问不到），剩 ${leftTotal} 条介绍没补——等能连上维基时再点一次即可`
+        : `还剩 ${leftTotal} 条介绍没补（维基无对应条目）`);
+    }
+    if (stopped) msg.push(`已在第 ${done} 座之后停下`);
+    if (errs.length) msg.push('⚠️ 失败 ' + errs.length + ' 座：' + errs.slice(0, 3).join('；') + (errs.length > 3 ? ' …' : ''));
+    backfillMsg.value = msg.join('；');
     loadAttrs();
   } finally {
-    backfillBusy.value = false;
+    backfillDone();
   }
 }
 onMounted(async () => {
   try { me.value = (await api('/auth/me')).user; } catch { /* 忽略 */ }
   await Promise.all([loadCities(), loadAllCities(), loadLines(), loadSeedStat(), loadAttrs()]);
 });
+onUnmounted(() => clearInterval(backfillTimer)); // 秒表不能在切页之后还转
 </script>
 
 <style scoped>

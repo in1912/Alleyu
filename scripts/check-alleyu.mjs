@@ -21,16 +21,18 @@ function ok(cond, name, detail = '') {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function req(p, { method = 'GET', body, token } = {}) {
+async function reqOn(base, p, { method = 'GET', body, token } = {}) {
   const headers = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (token) headers.Authorization = 'Bearer ' + token;
-  const res = await fetch(BASE + p, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
+  const res = await fetch(base + p, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
   const text = await res.text();
   let j = null;
   try { j = JSON.parse(text); } catch { /* png 等 */ }
   return { status: res.status, j, text, headers: res.headers };
 }
+// 主实例的薄包装：既有断言全部照旧写 req()；只有新开的第二实例（v1.11.1 的维基慢路径）用 reqOn(inst.base, …)
+const req = (p, opts) => reqOn(BASE, p, opts);
 
 // 极简 SSE 客户端（Node 无全局 EventSource）：收事件到流结束或超时
 function sseCollect(urlPath, ms) {
@@ -59,37 +61,46 @@ function sseCollect(urlPath, ms) {
   });
 }
 
-// ---- 起服务（独立 DATA_DIR，不碰真实数据） ----
-const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'alleyu-check-'));
-
-// v1.11.0 在线升级：升级会**真的往磁盘写文件**，所以自检必须把「升级根目录」指到临时仓库副本，
+// ---- 起被测实例（独立 DATA_DIR + 独立临时仓库副本，不碰真实数据/真实仓库） ----
+// v1.11.0 在线升级：升级会**真的往磁盘写文件**，所以「升级根目录」必须指到临时仓库副本，
 // 否则跑一次自检就把开发机的真实 server/ 换掉了（这是本仓库最不能破的规矩之一）。
 // 副本里只放升级会碰的三样：server/、web/dist、package.json；运行中的服务仍是真实仓库那份代码
 // （所以 ALLEYU_NO_RESTART=1 下"文件变了、进程没变"正好是我们要断言的状态）。
-const repoCopy = fs.mkdtempSync(path.join(os.tmpdir(), 'alleyu-repo-'));
-fs.cpSync(path.join(ROOT, 'server'), path.join(repoCopy, 'server'), { recursive: true });
-fs.mkdirSync(path.join(repoCopy, 'web'), { recursive: true });
-fs.cpSync(path.join(ROOT, 'web', 'dist'), path.join(repoCopy, 'web', 'dist'), { recursive: true });
-fs.copyFileSync(path.join(ROOT, 'package.json'), path.join(repoCopy, 'package.json'));
+// v1.11.1 抽成函数：要**同时**起两个实例。第二个专测「维基连不上」这条慢路径——它必须
+// **不带** ALLEYU_WIKI_OFFLINE（离线钩子让 fetchIntro 直接 throw，路径瞬间返回；生产上那个
+// 「40 条景点卡 20 分钟」的 bug 就是这么被自检漏过去的），改成把维基指向本地「只连不答」的桩。
+function startAlleyu({ port, extraEnv = {} }) {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'alleyu-check-'));
+  const repoCopy = fs.mkdtempSync(path.join(os.tmpdir(), 'alleyu-repo-'));
+  fs.cpSync(path.join(ROOT, 'server'), path.join(repoCopy, 'server'), { recursive: true });
+  fs.mkdirSync(path.join(repoCopy, 'web'), { recursive: true });
+  fs.cpSync(path.join(ROOT, 'web', 'dist'), path.join(repoCopy, 'web', 'dist'), { recursive: true });
+  fs.copyFileSync(path.join(ROOT, 'package.json'), path.join(repoCopy, 'package.json'));
 
-const child = spawn(process.execPath, ['--no-warnings', 'server/index.js'], {
-  cwd: ROOT,
-  env: {
-    ...process.env, ALLEYU_AI_STUB: '1', PORT: String(PORT), DATA_DIR: dataDir, ALLEYU_WIKI_OFFLINE: '1',
-    ALLEYU_UPGRADE_ROOT: repoCopy, ALLEYU_WEB_ROOT: path.join(repoCopy, 'web'), ALLEYU_NO_RESTART: '1',
-    // 上传上限调到 2MB：真实包只有几百 KB，调小之后一条 ~2.5MB 的包就能把 413 通道端到端测掉
-    ALLEYU_UPGRADE_MAX_MB: '2',
-  },
-  stdio: ['ignore', 'pipe', 'pipe'],
-});
-let serverLog = '';
-child.stdout.on('data', (d) => { serverLog += d; });
-child.stderr.on('data', (d) => { serverLog += d; });
+  const child = spawn(process.execPath, ['--no-warnings', 'server/index.js'], {
+    cwd: ROOT,
+    env: {
+      ...process.env, ALLEYU_AI_STUB: '1', PORT: String(port), DATA_DIR: dataDir, ALLEYU_WIKI_OFFLINE: '1',
+      ALLEYU_UPGRADE_ROOT: repoCopy, ALLEYU_WEB_ROOT: path.join(repoCopy, 'web'), ALLEYU_NO_RESTART: '1',
+      // 上传上限调到 2MB：真实包只有几百 KB，调小之后一条 ~2.5MB 的包就能把 413 通道端到端测掉
+      ALLEYU_UPGRADE_MAX_MB: '2',
+      ...extraEnv,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const inst = { child, dataDir, repoCopy, base: `http://localhost:${port}`, log: '' };
+  child.stdout.on('data', (d) => { inst.log += d; });
+  child.stderr.on('data', (d) => { inst.log += d; });
+  return inst;
+}
 
-async function waitUp() {
+const main = startAlleyu({ port: PORT });
+const { dataDir, repoCopy } = main; // 升级那组断言一直用这两个名字，保持不变
+
+async function waitUp(base) {
   for (let i = 0; i < 60; i++) {
     try {
-      const r = await fetch(BASE + '/api/health');
+      const r = await fetch(base + '/api/health');
       if (r.ok) return true;
     } catch { /* 未起 */ }
     await sleep(300);
@@ -97,9 +108,12 @@ async function waitUp() {
   return false;
 }
 
+let inst2 = null;   // 第二实例（维基连不上的慢路径）
+let hangSrv = null; // 「只连不答」的维基桩
+
 try {
   console.log('== 启动（桩 AI，独立数据目录） ==');
-  ok(await waitUp(), '服务启动 + /api/health');
+  ok(await waitUp(BASE), '服务启动 + /api/health');
 
   // ---- 鉴权 ----
   console.log('== 鉴权与免登录通道 ==');
@@ -213,6 +227,120 @@ try {
   ok(r.status === 403, '普通用户一键补全 403');
   r = await req(`/api/cities/${hz.id}/backfill`, { method: 'POST', token: admin });
   ok(r.status === 200 && r.j.imported === 0 && /高德/.test(r.j.intro_error || '') && /离线/.test(r.j.intro_error || ''), '离线+无Key 一键补全：不崩，高德/维基失败原因都交代');
+  // v1.11.1：介绍段中途抛错时「还剩多少条没补」也必须如实（老版本只在成功路径里数，抛错恒为 0 = 假话）
+  ok(r.j.intro_left >= 1 && r.j.intro_tried === 1 && r.j.wiki_unreachable === false,
+    '离线模式抛错时 intro_left 仍如实（不再假报 0）', `left=${r.j.intro_left} tried=${r.j.intro_tried}`);
+
+  // ---- v1.11.1：一键补全不再假死（维基连不上 → 有界返回 + 说真话） ----
+  // 这一段是**生产事故的回归测试**：老版本 40 条景点 × 单条最坏 32 秒 ≈ 21 分钟塞在一个请求里，
+  // 反代 60 秒就断、前端吞掉失败，界面「卡着不动」。断言的关键是**耗时有界**，而不只是字段对不对。
+  console.log('== 一键补全不再假死（v1.11.1） ==');
+  {
+    // ① 纯函数：预算 / 快停 / 抛错 三条规矩，注入假 fetch + 假时钟，零真实耗时
+    const require2 = createRequire(import.meta.url);
+    const { runIntroBackfill } = require2(path.join(ROOT, 'server', 'services', 'introBackfill.js'));
+    const need = (n) => Array.from({ length: n }, (_, i) => ({ id: i + 1, name: '景点' + (i + 1) }));
+    // 假时钟：把「每条 fetch 花的时间」变成可控的整数
+    const clock = (step) => { let t = 0; return { now: () => t, tick: () => { t += step; } }; };
+
+    let ck = clock(0);
+    let got;
+    const hits = [];
+    ck = clock(0);
+    got = await runIntroBackfill({ need: need(3), budgetMs: 20000, onHit: (row) => hits.push(row.id), now: ck.now, fetch: async () => { ck.tick(); return { hit: { text: '正文', source: '维基百科', url: 'u' } }; } });
+    ok(got.tried === 3 && got.ok === 3 && !got.budget_out && !got.unreachable, '纯函数：预算够就全部跑完（3/3 命中）', JSON.stringify(got));
+    ok(hits.length === 3 && hits.join(',') === '1,2,3', '纯函数：onHit 只在命中时逐条回调（写库由调用方做）', hits.join(','));
+    ck = clock(1000); // 每条耗 1 秒，预算 2.5 秒 → 第 3 条之前就该停
+    got = await runIntroBackfill({ need: need(40), budgetMs: 2500, now: ck.now, fetch: async () => { ck.tick(); return { hit: null, netFail: false }; } });
+    ok(got.budget_out === true && got.tried === 3 && got.miss === 3, '纯函数：时间预算到点即停（40 条只试了 3 条，不再空转）', JSON.stringify(got));
+    let calls = 0;
+    got = await runIntroBackfill({ need: need(40), budgetMs: 20000, fetch: async () => { calls++; return { hit: null, netFail: true }; } });
+    ok(got.unreachable === true && got.tried === 1 && calls === 1, '纯函数：连不上立刻停（40 条只发了 1 次请求）', JSON.stringify(got));
+    got = await runIntroBackfill({ need: need(40), budgetMs: 20000, fetch: async () => ({ hit: null, netFail: false }) });
+    ok(got.tried === 40 && got.miss === 40 && !got.unreachable && !got.budget_out, '纯函数：只是「没条目」就查完全部，不当成连不上', JSON.stringify(got));
+    got = await runIntroBackfill({ need: need(5), budgetMs: 20000, fetch: async () => { throw new Error('离线自检模式'); } });
+    ok(got.stopped_by_error === true && got.tried === 1 && got.error.includes('离线'), '纯函数：fetch 抛错如实记下并停，不伪装成「没条目」', JSON.stringify(got));
+    got = await runIntroBackfill({ need: [], budgetMs: 20000, fetch: async () => { throw new Error('不该被调用'); } });
+    ok(got.tried === 0 && got.ok === 0 && got.elapsed_ms === 0, '纯函数：没有待补景点时什么都不做', JSON.stringify(got));
+
+    // ② 真网络路径：本地「只连不答」的桩 + 300ms 超时 → 必须 netFail 且**没把 4 个 URL 全试一遍**
+    hangSrv = http.createServer(() => { /* 只连不答：模拟"墙" */ });
+    await new Promise((resolve) => hangSrv.listen(0, '127.0.0.1', resolve));
+    const hangPort = hangSrv.address().port;
+    // ⚠️ 这里**必须用 spawn 异步等**、不能用 execFileSync：下面那两个桩服务器就跑在本进程里，
+    //    而 execFileSync 会把本进程的事件循环整段冻住——桩根本来不及应答，于是「会答的桩」
+    //    也会被读成超时，断言就变成了自我欺骗（这个错我在这一版真犯过一次）。
+    const probeWiki = (extra) => new Promise((resolve) => {
+      const js = `
+        const w = require(${JSON.stringify(path.join(ROOT, 'server', 'services', 'wikiService.js'))});
+        (async () => {
+          const t0 = Date.now();
+          const r = await w.fetchIntroEx('故宫博物院');
+          process.stdout.write(JSON.stringify({ ms: Date.now() - t0, netFail: r.netFail, hit: !!r.hit }));
+        })();
+      `;
+      const ch = spawn(process.execPath, ['-e', js], {
+        env: { ...process.env, ALLEYU_WIKI_OFFLINE: '', ALLEYU_WIKI_ORIGINS: extra, ALLEYU_WIKI_TIMEOUT_MS: '300' },
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      let out = '';
+      ch.stdout.on('data', (d) => { out += d; });
+      ch.on('exit', () => { try { resolve(JSON.parse(out.trim())); } catch { resolve({ parse_error: out.trim() }); } });
+    });
+    const twoSites = `维基旅行|http://127.0.0.1:${hangPort},维基百科|http://127.0.0.1:${hangPort}`;
+    const hangHit = await probeWiki(twoSites);
+    ok(hangHit.netFail === true && hangHit.ms < 1500,
+      '连不上时报 netFail（不再把网络问题说成「暂无条目」）', JSON.stringify(hangHit));
+    // 慢但**会答**的桩：120ms 后回一个合法空 JSON → 是「没这条」，不是「连不上」
+    // （必须明显快于 300ms 的超时，否则这里测的就变成超时路径了）
+    const slowSrv = http.createServer((rq, rs) => { setTimeout(() => { rs.writeHead(200, { 'Content-Type': 'application/json' }); rs.end('{"query":{"pages":{}}}'); }, 120); });
+    await new Promise((resolve) => slowSrv.listen(0, '127.0.0.1', resolve));
+    const slowHit = await probeWiki(`维基百科|http://127.0.0.1:${slowSrv.address().port}`);
+    slowSrv.close();
+    ok(slowHit.netFail === false && slowHit.hit === false,
+      '站点答「没这条」时 netFail=false（可达但无条目 ≠ 连不上）', JSON.stringify(slowHit));
+
+    // ③ 端到端：第二个实例（维基=只连不答的桩，超时 400ms）——一次补全必须**有界**返回
+    inst2 = startAlleyu({
+      port: PORT + 1,
+      extraEnv: {
+        ALLEYU_WIKI_OFFLINE: '', // 关键：不能带离线钩子，否则走不到真实慢路径
+        ALLEYU_WIKI_ORIGINS: `维基旅行|http://127.0.0.1:${hangPort},维基百科|http://127.0.0.1:${hangPort}`,
+        ALLEYU_WIKI_TIMEOUT_MS: '400', ALLEYU_INTRO_BUDGET_MS: '5000',
+        AMAP_KEY: '', // 断掉真高德：这一组只测介绍段的有界性，别让外网影响耗时
+      },
+    });
+    ok(await waitUp(inst2.base), `第二实例起来了（${inst2.base}，维基连不上）`);
+    const lr2 = await reqOn(inst2.base, '/api/auth/login', { method: 'POST', body: { username: 'wpqadmin', password: 'admin123' } });
+    const tk2 = lr2.j && lr2.j.token;
+    const c2 = await reqOn(inst2.base, '/api/cities', { method: 'POST', token: tk2, body: { name: '烟测城' } });
+    const city2 = c2.j.city.id;
+    for (const n of ['甲景点', '乙景点', '丙景点']) await reqOn(inst2.base, '/api/attractions', { method: 'POST', token: tk2, body: { city_id: city2, name: n } });
+    const t0 = Date.now();
+    const bf = await reqOn(inst2.base, `/api/cities/${city2}/backfill`, { method: 'POST', token: tk2 });
+    const spent = Date.now() - t0;
+    ok(bf.status === 200 && spent < 5000, `老 bug 的回归：维基连不上一键补全仍在 ${(spent / 1000).toFixed(1)}s 内返回 200（老版本是 20 分钟起步）`, `status=${bf.status} ms=${spent}`);
+    ok(bf.j.wiki_unreachable === true && bf.j.intro_tried === 1 && bf.j.intro_ok === 0,
+      '如实报「维基连不上」，且只试了 1 条就停（不把 40 条都烧一遍）', JSON.stringify(bf.j));
+    ok(bf.j.intro_left === 3 && /维基连不上/.test(bf.j.intro_error || ''),
+      'intro_left 数得对（3 条一条没补）+ 错误文案点名是维基连不上', `left=${bf.j.intro_left} err=${bf.j.intro_error}`);
+    const sk2 = Date.now();
+    const sk = await reqOn(inst2.base, `/api/cities/${city2}/backfill`, { method: 'POST', token: tk2, body: { skip_intro: true } });
+    ok(sk.j.skip_intro === true && sk.j.intro_tried === 0 && sk.j.wiki_unreachable === false && Date.now() - sk2 < 2000,
+      'skip_intro=true：整段介绍都不碰（维基不可达时后续城市只导入景点，不再白等）', JSON.stringify(sk.j));
+    const pr = await reqOn(inst2.base, '/api/wiki/probe', { token: tk2 });
+    ok(pr.status === 200 && pr.j.reachable === false && pr.j.sites.length === 2 && pr.j.sites.every((s) => s.ms >= 0 && !s.ok),
+      '连通探针如实报「两家都连不上」+ 每站点耗时（只读，不写库）', JSON.stringify(pr.j));
+    ok(pr.j.timeout_ms === 400, '连通探针回显当前超时值（排障时能对上环境变量）', String(pr.j.timeout_ms));
+    // 鉴权在主实例上测（JWT 密钥随 DATA_DIR 走，第二实例的 token 不通用）
+    const noAuth = await reqOn(BASE, '/api/wiki/probe');
+    ok(noAuth.status === 401, '未登录访问连通探针 401（没被误加进 EXEMPT）');
+    const badAuth = await reqOn(BASE, '/api/wiki/probe', { token: u1 });
+    ok(badAuth.status === 403, '普通用户访问连通探针 403（仅管理员）');
+    const offProbe = await reqOn(BASE, '/api/wiki/probe', { token: admin });
+    ok(offProbe.status === 200 && offProbe.j.offline === true && offProbe.j.reachable === false,
+      '离线自检模式下的探针如实说「离线模式、没打真网」（绝不在离线自检里偷跑外网）', JSON.stringify(offProbe.j));
+  }
 
   // ---- 动态线路（v1.7.0）：线路不再白名单——新线路名直接入库、可改可查 ----
   r = await req('/api/cities', { method: 'POST', token: admin, body: { name: '迪拜', province: '阿联酋', line: '中东线' } });
@@ -1453,9 +1581,11 @@ try {
   console.log(`\n结果：${pass} 通过，${fail} 失败`);
   if (fail) {
     console.log('失败项：\n' + fails.map((f) => '  - ' + f).join('\n'));
-    console.log('\n服务端日志（尾部）：\n' + serverLog.slice(-2000));
+    console.log('\n服务端日志（尾部）：\n' + main.log.slice(-2000));
   }
 } finally {
-  child.kill();
+  main.child.kill();
+  if (inst2) inst2.child.kill();  // 第二实例：仍按 child 句柄收，绝不 taskkill
+  if (hangSrv) hangSrv.close();
 }
 process.exit(fail ? 1 : 0);

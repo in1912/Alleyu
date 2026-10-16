@@ -183,6 +183,27 @@ CREATE TABLE IF NOT EXISTS invite_codes (
   created_by INTEGER NOT NULL DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now','localtime'))
 );
+
+-- v1.11.0 升级日志：管理员在「设置 → 升级」上传升级包后每次应用/失败都记一行。
+-- 被覆盖文件的备份在 data/upgrades/backup_<ts>/（不在库里），这里只存路径与摘要。
+CREATE TABLE IF NOT EXISTS upgrade_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  actor TEXT NOT NULL DEFAULT '',
+  ip TEXT NOT NULL DEFAULT '',
+  from_version TEXT NOT NULL DEFAULT '',
+  to_version TEXT NOT NULL DEFAULT '',
+  files_added INTEGER NOT NULL DEFAULT 0,
+  files_overwritten INTEGER NOT NULL DEFAULT 0,
+  bytes INTEGER NOT NULL DEFAULT 0,
+  backup_dir TEXT NOT NULL DEFAULT '',
+  dist_dir TEXT NOT NULL DEFAULT '',
+  restarted INTEGER NOT NULL DEFAULT 0,
+  restart_suppressed INTEGER NOT NULL DEFAULT 0,
+  ok INTEGER NOT NULL DEFAULT 1,
+  sha256 TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT ''
+);
 `;
 db.exec(DDL);
 
@@ -232,6 +253,18 @@ function getSetting(key) {
 function setSetting(key, value) {
   db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
     .run(key, String(value ?? ''));
+}
+
+// ---------- 启动时清理被掐断的生成任务（v1.11.0） ----------
+// 生成是 fire-and-forget 的流式任务：进程一退出（升级自动重启 / 手工重启 / 崩溃），
+// 库里那行就永远停在 pending/generating，前端进度条卡死、连「重新生成」都点不了。
+// 启动这一刻没有任何生成在跑，所以这两个状态的行**必然**是被中断的，不需要时间窗判断。
+// 已流式落库的正文保留在 content 里（用户至少能看到半成品），只是不再继续写。
+function sweepInterrupted() {
+  const msg = '服务在生成过程中重启（升级或手工重启），本篇已中断，请点「重新生成」';
+  const g = db.prepare("UPDATE guides SET status='error', error=?, stage='', updated_at=datetime('now','localtime') WHERE status IN ('pending','generating')").run(msg);
+  const j = db.prepare("UPDATE journals SET status='error', error=?, stage='', updated_at=datetime('now','localtime') WHERE status IN ('pending','generating')").run(msg);
+  return g.changes + j.changes;
 }
 
 // ---------- 种子：城市库（adcode/坐标为市中心近似值，供天气与静态地图定位） ----------
@@ -838,4 +871,4 @@ function pullSeedCities(line) {
   return { line: ln, total: list.length, added: addedNames.length, skipped: list.length - addedNames.length, attrs, added_names: addedNames };
 }
 
-module.exports = { db, getSetting, setSetting, addCol, pullSeedCities, seedCityStats, seedLines };
+module.exports = { db, dataDir, getSetting, setSetting, addCol, sweepInterrupted, pullSeedCities, seedCityStats, seedLines };

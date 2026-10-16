@@ -71,7 +71,7 @@ function pageForPath(p) {
   if (p.startsWith('/guides') || p.startsWith('/guide') || p.startsWith('/plan') || p.startsWith('/history') || p.startsWith('/journals') || p.startsWith('/journal')) return 'guides';
   if (CITY_READ_PREFIXES.some((pre) => p.startsWith(pre))) return null; // 登录即可（页面可见性在前端收口）
   if (p.startsWith('/weather')) return 'weather';
-  if (p.startsWith('/ai') || p.startsWith('/users') || p.startsWith('/settings') || p.startsWith('/invites')) return 'settings';
+  if (p.startsWith('/ai') || p.startsWith('/users') || p.startsWith('/settings') || p.startsWith('/invites') || p.startsWith('/upgrade')) return 'settings';
   return null; // /amap 共享通道（登录即可）：图片代理给 <img> 直链用
 }
 
@@ -81,6 +81,7 @@ const TAB_PATHS = {
     ['ai', ['/ai', '/settings']],
     ['users', ['/users']],
     ['invite', ['/invites']],
+    ['upgrade', ['/upgrade']], // v1.11.0 在线升级
   ],
 };
 

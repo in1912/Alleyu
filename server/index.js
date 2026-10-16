@@ -49,6 +49,7 @@ app.use('/api/share', require('./routes/shareRoutes')); // 公开分享读（EXE
 app.use('/api/amap', require('./routes/amapRoutes'));
 app.use('/api/weather', require('./routes/weatherRoutes'));
 app.use('/api/settings', require('./routes/settingsRoutes'));
+app.use('/api/upgrade', require('./routes/upgradeRoutes')); // v1.11.0 在线升级（router 内再做一次 admin 闸）
 
 app.get('/api/health', (req, res) => res.json({ ok: true, ts: Date.now() }));
 
@@ -56,7 +57,8 @@ app.get('/api/health', (req, res) => res.json({ ok: true, ts: Date.now() }));
 app.set('trust proxy', true);
 
 // ---------- 前端静态 ----------
-const webRoot = path.join(__dirname, '..', 'web');
+// ALLEYU_WEB_ROOT：自检把前端根指到临时仓库副本，避免在真实 web/dist 上做升级自测
+const webRoot = process.env.ALLEYU_WEB_ROOT || path.join(__dirname, '..', 'web');
 function latestDist() {
   const dir = path.join(webRoot, 'dist');
   if (!fs.existsSync(dir)) return null;
@@ -84,14 +86,64 @@ app.use('/api', (req, res) => res.status(404).json({ error: '接口不存在' })
 
 // 错误兜底：永远回 JSON（前端按 JSON 解析）
 app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
-  console.error('[server]', err.message);
   if (res.headersSent) return;
+  // body 解析器超限（express.json / express.raw）：body-parser 自带 413，但我们的兜底会把它盖成 500，
+  // 前端只能看到「服务器内部错误」，分不清是包太大还是服务端炸了 → 这里还原成语义明确的 413。
+  if (err.type === 'entity.too.large' || err.status === 413) {
+    const isUpgrade = req.path.startsWith('/api/upgrade');
+    // 上限只有一个来源（upgradeService），免得 index 的文案和 express.raw 的实际限制各说各话
+    const limit = isUpgrade ? `${require('./services/upgradeService').MAX_UPLOAD_MB}MB` : '12MB';
+    console.warn(`[server] 请求体超限 ${req.path}（上限 ${limit}）`);
+    return res.status(413).json({
+      error: isUpgrade ? `升级包超过上传上限（${limit}）` : `请求体过大（上限 ${limit}）`,
+      code: 'TOO_LARGE',
+    });
+  }
+  console.error('[server]', err.message);
   res.status(500).json({ error: '服务器内部错误：' + err.message });
 });
 
 initAdmin();
 
 const PORT = Number(process.env.PORT) || 9610;
-app.listen(PORT, () => {
-  console.log(`[游巷 Alleyu] http://localhost:${PORT}  (admin 初始密码见启动日志)`);
-});
+const IS_CHILD = process.env.ALLEYU_RESTART_CHILD === '1'; // 本进程是升级后接班的那一个
+// 接班场景：先退的是老进程，端口要等它把 socket 放开才能 bind → 500ms × 24 = 12s 的重试窗口
+// 普通启动：端口被别的程序占着时重试也没用，只多试一次就明确退出
+const RETRY_LEFT = IS_CHILD ? 24 : 2;
+const RETRY_EVERY = IS_CHILD ? 500 : 1000;
+
+function boot() {
+  let left = RETRY_LEFT;
+  const onError = (err) => {
+    if (err.code === 'EADDRINUSE' && --left > 0) {
+      console.log(`[server] ${PORT} 被占用（多半是上一个进程还没退干净），${RETRY_EVERY}ms 后重试，还剩 ${left} 次`);
+      return setTimeout(() => { server.listen(PORT); }, RETRY_EVERY);
+    }
+    console.error('[server] 监听失败：', err.code || '', err.message);
+    require('./services/restartService').writeFatal(err); // 把「备份目录在哪」写进 Logs/restart-child.log
+    process.exit(3);
+  };
+  const server = app.listen(PORT, () => {
+    server.off('error', onError); // 起来之后就不许再被监听错误带走了
+    const rs = require('./services/restartService');
+    const pend = rs.readPending();
+    // ⚠️ isChild() 这一条不能少：状态里的 restart_pending=true 是**父进程发起交接时写的**，
+    //    接班成功的子进程读到的必然是 true（它就是靠这句话知道自己在接班的）。
+    //    不加这个判断，每次正常升级都会自己喊「重启没有完成交接」，管理员会真的去拿备份回滚。
+    if (pend && pend.restart_pending && !rs.isChild()) {
+      // 上次升级发起了重启、但接班进程没起来（现在这个是手工拉起来的）——必须说出来，别让人以为升级成功了
+      console.warn(`[server] ⚠️ 上次升级（v${pend.from_version} → v${pend.to_version}）的重启没有完成交接；`
+        + `如果行为异常，把 ${pend.backup_dir || 'data/upgrades/backup_*'} 里的文件拷回仓库再重启`);
+    }
+    rs.clearPending();
+    // 重启把正在生成的攻略/游记掐断了 → 置回 error，用户才能点「重新生成」（否则永远卡在运行中）
+    try {
+      const n = require('./db').sweepInterrupted();
+      if (n) console.log(`[server] 启动了 ${n} 个被中断的生成任务（已置为失败，可重新生成）`);
+    } catch (e) { console.warn('[server] sweepInterrupted 失败:', e.message); }
+    console.log(`[游巷 Alleyu] http://localhost:${PORT}  (admin 初始密码见启动日志)`);
+  });
+  server.on('error', onError);
+}
+
+boot();

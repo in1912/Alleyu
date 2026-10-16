@@ -4,6 +4,7 @@
     <div class="tabs">
       <div class="t" :class="{ on: tab === 'global' }" @click="tab = 'global'">AI 全局配置</div>
       <div class="t" :class="{ on: tab === 'invite' }" @click="tab = 'invite'">邀请码</div>
+      <div class="t" :class="{ on: tab === 'upgrade' }" @click="tab = 'upgrade'">升级</div>
       <div class="t" :class="{ on: tab === 'sys' }" @click="tab = 'sys'">系统</div>
     </div>
 
@@ -95,6 +96,149 @@
       </table>
     </div>
 
+    <!-- 在线升级（v1.11.0，admin）：上传升级包 → 预检 → 应用 → 自动重启 -->
+    <div v-if="tab === 'upgrade'" class="card">
+      <h3 style="margin-top: 0">在线升级</h3>
+      <p class="hint" style="margin-top: 0">
+        上传开发机上用 <code>npm run pack:upgrade</code> 打出的 <code>游巷-x.y.z-upgrade.zip</code>。
+        先「预检」看它要动哪些文件（<b>预检只读，一个字节都不写</b>），确认无误再「应用升级并重启」。
+        应用后服务会<b>自己重启</b>，1~3 秒内页面打不开属于正常，本页会自动等它起来。
+      </p>
+
+      <table class="tb" style="max-width: 640px" v-if="st">
+        <tbody>
+          <tr>
+            <td>正在运行</td>
+            <td>
+              <b>v{{ st.current_version }}</b>
+              <span class="hint">（磁盘 package.json：v{{ st.package_json_version }}<template v-if="st.current_version !== st.package_json_version">——换过文件但进程还没重启</template>）</span>
+            </td>
+          </tr>
+          <tr><td>Node / 平台</td><td>{{ st.node }}（{{ st.platform }}）</td></tr>
+          <tr><td>现役前端目录</td><td>{{ st.latest_dist || '—' }}<span class="hint">（保留 {{ st.keep.dist }} 份 / 备份保留 {{ st.keep.backups }} 份）</span></td></tr>
+          <tr><td>升级目录</td><td class="hint">{{ st.upgrade_root }}</td></tr>
+          <tr><td>上传上限</td><td>{{ st.max_upload_mb }} MB<span class="hint">（nginx 的 client_max_body_size 要不小于它）</span></td></tr>
+          <tr>
+            <td>正在生成</td>
+            <td>
+              <span v-if="!st.active_generations.length" class="hint">无 —— 现在重启不会打断任何人的生成</span>
+              <span v-else class="err-text">
+                有 {{ st.active_generations.length }} 个任务在跑（{{ st.active_generations.map((a) => (a.kind === 'guide' ? '攻略' : '游记') + ' #' + a.id).join('、') }}），
+                升级会重启服务把它掐断 —— 先等它跑完
+              </span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div style="display: flex; gap: 10px; margin-top: 14px; align-items: center; flex-wrap: wrap">
+        <input ref="upFileEl" type="file" accept=".zip,application/zip" @change="pickPack" />
+        <button class="btn ghost" :disabled="!upFile || upBusy || upWaiting" @click="doPlanPack">{{ upPlanning ? '预检中…' : '预检（不改盘）' }}</button>
+        <button class="btn" :disabled="!planToken || upBusy || upWaiting" @click="doApplyPack">{{ upApplying ? '升级中…' : '应用升级并重启' }}</button>
+        <span v-if="upMsg" class="up-msg" :class="upOk ? 'ok-text' : 'err-text'" style="margin: 0">{{ upMsg }}</span>
+      </div>
+      <p class="hint" style="margin: 6px 0 0">
+        「应用」按钮必须先预检通过才会亮（预检结果保留 10 分钟、只能用一次；预检的是哪个包，应用的就是哪个包）。
+      </p>
+
+      <!-- 预检结果 -->
+      <div v-if="plan" style="margin-top: 16px">
+        <h3 style="margin: 0 0 8px">预检结果：v{{ plan.version.current }} → v{{ plan.version.incoming }}</h3>
+        <table class="tb" style="max-width: 640px">
+          <tbody>
+            <tr><td>文件</td><td>共 {{ plan.summary.files_total }} 个：新增 <b>{{ plan.summary.add }}</b>、覆盖 <b>{{ plan.summary.overwrite }}</b>、无需写入 {{ plan.summary.skip }}</td></tr>
+            <tr><td>前端目录</td><td>{{ plan.summary.dist_current || '—' }} → <b>{{ plan.summary.dist_dir || '（本包不含前端）' }}</b></td></tr>
+            <tr><td>包大小</td><td>{{ (plan.summary.bytes_zip / 1024).toFixed(0) }} KB（解开 {{ (plan.summary.bytes_uncomp / 1024).toFixed(0) }} KB）</td></tr>
+            <tr><td>需要重启</td><td>{{ plan.restart_required ? '是（改动含 server 代码或 package.json）' : '否（只换了前端，下一次请求就生效）' }}</td></tr>
+            <tr v-if="plan.version.downgrade"><td>⚠️ 降级</td><td class="err-text">包内版本比现役低 —— 只有在明确回滚时才继续</td></tr>
+          </tbody>
+        </table>
+        <p class="hint" style="margin: 8px 0 0">本次预检没有写入任何文件。逐文件明细：</p>
+        <details style="margin-top: 4px">
+          <summary class="hint" style="cursor: pointer">展开 {{ plan.files.length }} 个文件</summary>
+          <table class="tb" style="margin-top: 8px">
+            <thead><tr><th>动作</th><th>路径</th><th>大小</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr v-for="f in plan.files" :key="f.path">
+                <td>
+                  <span class="badge" :class="f.action === 'add' ? 'blue' : (f.action === 'overwrite' ? 'gray' : 'gray')">
+                    {{ f.action === 'add' ? '新增' : (f.action === 'overwrite' ? '覆盖' : '跳过') }}
+                  </span>
+                </td>
+                <td><code>{{ f.path }}</code></td>
+                <td class="hint">{{ (f.size / 1024).toFixed(1) }} KB</td>
+                <td class="hint">{{ f.note || '—' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </details>
+        <div v-if="plan.warnings.length" style="margin-top: 10px">
+          <p v-for="(w, i) in plan.warnings" :key="i" class="warn-text" style="margin: 4px 0; font-size: 13px">⚠️ {{ w }}</p>
+        </div>
+      </div>
+
+      <!-- 重启等待 -->
+      <div v-if="upWaiting" style="margin-top: 16px; padding: 12px; border: 1px solid var(--line); border-radius: 8px">
+        <b>🔄 已等 {{ upWaitSec }} 秒，正在等服务重启…</b>
+        <p class="hint" style="margin: 6px 0 0">
+          服务重启起来的瞬间本页会自动刷新。超过 90 秒还没回来，就看服务器上的
+          <code>Logs\restart-child.log</code>（里面写着接管结果和备份目录）。
+        </p>
+      </div>
+
+      <!-- 升级结果 -->
+      <div v-if="upResult" style="margin-top: 16px; padding: 12px; border: 1px solid var(--line); border-radius: 8px">
+        <b>升级已落盘：v{{ upResult.version.from }} → v{{ upResult.version.to }}</b>
+        <p class="hint" style="margin: 6px 0 0">
+          写入 {{ upResult.files_written.total }} 个文件（覆盖 {{ upResult.files_written.overwrite.length }}、新增 {{ upResult.files_written.add.length }}）；
+          <template v-if="upResult.backup_dir">备份在 <code>{{ upResult.backup_dir.split(/[\\/]/).pop() }}</code>，可在下面下载；</template>
+          前端目录 <code>{{ upResult.dist_dir || '未变' }}</code>。
+        </p>
+        <p :class="upResult.restart === 'suppressed' ? 'warn-text' : 'hint'" style="margin: 6px 0 0">{{ upResult.restart_note }}</p>
+      </div>
+
+      <hr style="border: none; border-top: 1px solid var(--line); margin: 20px 0" />
+      <h3 style="margin-top: 0">升级历史</h3>
+      <table class="tb">
+        <thead><tr><th>时间</th><th>版本</th><th>文件</th><th>大小</th><th>操作人</th><th>重启</th><th>结果</th><th>备份</th></tr></thead>
+        <tbody>
+          <tr v-for="l in upLogs" :key="l.id">
+            <td class="hint">{{ l.created_at }}</td>
+            <td>{{ l.from_version }} → <b>{{ l.to_version }}</b></td>
+            <td class="hint">+{{ l.files_added }} / ~{{ l.files_overwritten }}</td>
+            <td class="hint">{{ (l.bytes / 1024).toFixed(0) }} KB</td>
+            <td class="hint">{{ l.actor }}<template v-if="l.ip"><br />{{ l.ip }}</template></td>
+            <td>
+              <span class="badge" :class="l.restarted ? 'blue' : 'gray'">{{ l.restart_suppressed ? '已抑制' : (l.restarted ? '已重启' : '未重启') }}</span>
+            </td>
+            <td>
+              <span class="badge" :class="l.ok ? 'blue' : 'gray'">{{ l.ok ? '成功' : '失败' }}</span>
+              <span v-if="l.note" class="hint" style="display: block; font-size: 12px">{{ l.note }}</span>
+            </td>
+            <td><button v-if="l.backup_dir" class="btn ghost sm" @click="dlBackup(l.backup_dir)">下载</button><span v-else class="hint">—</span></td>
+          </tr>
+          <tr v-if="!upLogs.length"><td colspan="8" class="hint">还没有升级记录</td></tr>
+        </tbody>
+      </table>
+
+      <hr style="border: none; border-top: 1px solid var(--line); margin: 20px 0" />
+      <h3 style="margin-top: 0">保留份数</h3>
+      <div class="grid2" style="max-width: 520px">
+        <div><label class="fld">备份保留（1~20，默认 5）</label><input v-model="k.backups" class="input" placeholder="留空 = 默认 5" /></div>
+        <div><label class="fld">旧前端目录保留（1~20，默认 2）</label><input v-model="k.dist" class="input" placeholder="留空 = 默认 2" /></div>
+      </div>
+      <div style="display: flex; gap: 10px; margin-top: 12px; align-items: center">
+        <button class="btn ghost" @click="saveKeep">保存保留份数</button>
+        <span v-if="kMsg" :class="kOk ? 'ok-text' : 'err-text'" style="margin: 0">{{ kMsg }}</span>
+      </div>
+
+      <p class="hint" style="margin-bottom: 0">
+        <b>回滚三步</b>：① 在「升级历史」里下载对应的备份 zip（或到服务器 <code>data\upgrades\</code> 里找 <code>backup_&lt;时间戳&gt;</code>）；
+        ② 把里面的文件按相同相对路径拷回仓库；③ 重启服务。
+        <br /><b>这套升级不会做的事</b>：不删 server 里被废弃的旧文件、不装 npm 依赖、不校验你从哪个版本升（只校验「是不是游巷的包」和「包内版本号与 manifest 是否一致」）。
+      </p>
+    </div>
+
     <!-- 系统：版本信息 + 系统默认生成次数 -->
     <div v-if="tab === 'sys'" class="card">
       <table class="tb" style="max-width: 520px" v-if="sys">
@@ -145,7 +289,7 @@
 
 <script setup>
 import { onMounted, reactive, ref } from 'vue';
-import { api } from '../api/index.js';
+import { api, probeVersion, token, uploadZip } from '../api/index.js';
 import { copyText } from '../clipboard.js';
 
 const tab = ref('global');
@@ -264,16 +408,122 @@ async function resetAmap() {
   } catch (e) { amapOk.value = false; amapMsg.value = e.message; }
 }
 
+// ---- 在线升级（v1.11.0） ----
+const st = ref(null);
+const upFileEl = ref(null);
+const upFile = ref(null);
+const upMsg = ref(''); const upOk = ref(false);
+const upBusy = ref(false); const upPlanning = ref(false); const upApplying = ref(false);
+const plan = ref(null); const planToken = ref('');
+const upResult = ref(null);
+const upWaiting = ref(false); const upWaitSec = ref(0);
+const upLogs = ref([]);
+const k = reactive({ backups: '', dist: '' });
+const kMsg = ref(''); const kOk = ref(false);
+
+async function loadUpgrade() {
+  st.value = await api('/upgrade/status');
+  upLogs.value = st.value.logs || [];
+  k.backups = st.value.keep && st.value.keep.backups_set ? String(st.value.keep.backups) : '';
+  k.dist = st.value.keep && st.value.keep.dist_set ? String(st.value.keep.dist) : '';
+}
+async function saveKeep() {
+  kMsg.value = '';
+  try {
+    await api('/settings', { method: 'PUT', body: { upgrade_keep_backups: k.backups, upgrade_keep_dist: k.dist } });
+    kOk.value = true; kMsg.value = '已保存（下次升级起生效）';
+    await loadUpgrade();
+  } catch (e) { kOk.value = false; kMsg.value = e.message; }
+}
+function pickPack(e) {
+  upFile.value = (e.target.files && e.target.files[0]) || null;
+  plan.value = null; planToken.value = ''; upResult.value = null;
+  upMsg.value = ''; upOk.value = false;
+  const mb = (st.value && st.value.max_upload_mb) || 64;
+  // 前端的 64MB 是**人话拦截**，真正的上限在 nginx 与服务端（两边都要够大）
+  if (upFile.value && upFile.value.size > mb * 1024 * 1024) {
+    upOk.value = false;
+    upMsg.value = `这个包 ${(upFile.value.size / 1048576).toFixed(1)}MB 超过了服务器上限 ${mb}MB —— 先调大 nginx 的 client_max_body_size 和服务端的 ALLEYU_UPGRADE_MAX_MB`;
+  }
+}
+async function doPlanPack() {
+  if (!upFile.value || upBusy.value) return;
+  upBusy.value = true; upPlanning.value = true; upMsg.value = ''; plan.value = null; planToken.value = ''; upResult.value = null;
+  try {
+    const j = await uploadZip('/upgrade/plan', upFile.value);
+    plan.value = j.plan; planToken.value = j.token;
+    upOk.value = true;
+    upMsg.value = `预检通过：可升级到 v${j.plan.version.incoming}（没有写入任何文件）`;
+  } catch (e) {
+    upOk.value = false; upMsg.value = e.message;
+  } finally { upBusy.value = false; upPlanning.value = false; }
+}
+async function doApplyPack() {
+  if (!planToken.value || upBusy.value) return;
+  const p = plan.value;
+  let ask = `确认应用这个升级包？\n\n${p.version.current} → ${p.version.incoming}\n`
+    + `新增 ${p.summary.add} / 覆盖 ${p.summary.overwrite} 个文件\n`
+    + (p.restart_required ? '\n应用后服务会自动重启，期间页面打不开（1~3 秒）。' : '\n本包只换前端，不需要重启。');
+  if (!confirm(ask)) return;
+  if (p.summary.dep_changed
+    && !confirm('⚠️ 这个包改了 npm 依赖。如果服务器上还没跑过 npm install --omit=dev，重启后服务会起不来。\n\n仍然继续？')) return;
+  upBusy.value = true; upApplying.value = true; upMsg.value = '';
+  try {
+    // 这里可以用 api()：重启发生在**响应发完之后**（服务端在 res 'finish' 里才拉起接替进程），
+    // 所以这次请求本身不会撞上重启窗口。
+    upResult.value = await api('/upgrade/apply', { method: 'POST', body: { token: planToken.value, allow_dep_change: !!p.summary.dep_changed } });
+    planToken.value = ''; plan.value = null;
+    upOk.value = true;
+    upMsg.value = upResult.value.restart === 'scheduled' ? '升级已落盘，正在等服务重启…' : '升级已落盘';
+    upFile.value = null;
+    if (upFileEl.value) upFileEl.value.value = '';
+    if (upResult.value.restart === 'scheduled') waitRestart(upResult.value.version.to);
+    else await loadUpgrade();
+  } catch (e) {
+    upOk.value = false; upMsg.value = e.message;
+    try { await loadUpgrade(); } catch { /* 状态刷新失败不覆盖上面的错误信息 */ }
+  } finally { upBusy.value = false; upApplying.value = false; }
+}
+// 等服务重启：必须用裸探针（probeVersion 直接 fetch /api/system-info）。
+// 这个窗口里 api() 很可能 401，而它的 401 分支会强制跳登录页 —— 那会把管理员踢出去。
+async function waitRestart(expect) {
+  upWaiting.value = true; upWaitSec.value = 0;
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 1500));
+    upWaitSec.value = Math.round((i + 1) * 1.5);
+    const info = await probeVersion();
+    if (info && info.version === expect) { location.reload(); return; }
+  }
+  upWaiting.value = false;
+  upOk.value = false;
+  upMsg.value = '等了 90 秒还没等到新版本上线。到服务器上看 Logs\\restart-child.log（接管结果与备份目录都在里面），或手动重启服务；'
+    + '若 server 代码没起来，用「升级历史」里刚下载的备份按要求拷回仓库再重启。';
+}
+async function dlBackup(name) {
+  try {
+    const t = token();
+    const res = await fetch(`/api/upgrade/backup/${encodeURIComponent(name)}/download`, { headers: t ? { Authorization: 'Bearer ' + t } : {} });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${name}.zip`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  } catch (e) { alert('下载备份失败：' + e.message); }
+}
+
 onMounted(async () => {
   const gc = await api('/ai/global');
   g.baseUrl = gc.base_url; g.model = gc.model; g.has_key = gc.has_key;
-  const st = await api('/settings');
-  g.amapSet = !!st.amap_key_set;
-  q.guide = st.quota_default_guide || '';
-  q.journal = st.quota_default_journal || '';
-  s.publicBase = st.public_base_url || '';
+  const stt = await api('/settings');
+  g.amapSet = !!stt.amap_key_set;
+  q.guide = stt.quota_default_guide || '';
+  q.journal = stt.quota_default_journal || '';
+  s.publicBase = stt.public_base_url || '';
   sys.value = await api('/system-info');
   await loadInvites();
+  await loadUpgrade();
 });
 </script>
 

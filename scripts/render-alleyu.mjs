@@ -9,6 +9,7 @@ import process from 'node:process';
 import path from 'node:path';
 import fs from 'node:fs';
 import net from 'node:net';
+import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 
@@ -34,7 +35,9 @@ if (!process.env.ALLEYU_URL) {
   }
   server = spawn(process.execPath, ['--no-warnings', 'server/index.js'], {
     cwd: ROOT,
-    env: { ...process.env, ALLEYU_AI_FORCE_STUB: '1' },
+    // ALLEYU_NO_RESTART=1：render 跑在真实仓库根上，万一有人手滑点了「应用升级并重启」，
+    // 至少不会有进程被换掉（文件仍会被写——所以下面的用例只预检、绝不点应用）
+    env: { ...process.env, ALLEYU_AI_FORCE_STUB: '1', ALLEYU_NO_RESTART: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   server.stdout.on('data', () => {}); // 必须消费，防管道写满阻塞子进程
@@ -408,12 +411,110 @@ for (const [hash, sel, name] of [
   }
 }
 
-// v1.6.0：设置页只有三页签（个人 AI 配置已下线，全站唯一全局 Key）
+// v1.6.0 起设置页无「我的 AI」；v1.10.0 加「邀请码」，v1.11.0 加「升级」
 await page.goto(URL_BASE + '/#/settings');
 await page.waitForSelector('.tabs .t', { timeout: 6000 });
 const setTabs = await page.locator('.tabs .t').allInnerTexts();
-ok(setTabs.length === 3 && !setTabs.some((t) => t.includes('我的 AI')), '设置页三页签（AI 全局/邀请码/系统，个人配置与改密码已下线）');
-ok(setTabs.some((t) => t.includes('邀请码')), '三页签里有「邀请码」（v1.10.0 新增）');
+ok(setTabs.length === 4 && !setTabs.some((t) => t.includes('我的 AI')), '设置页四页签（AI 全局/邀请码/升级/系统，个人配置与改密码已下线）');
+ok(setTabs.some((t) => t.includes('邀请码')), '四页签里有「邀请码」（v1.10.0 新增）');
+ok(setTabs.some((t) => t.includes('升级')), '四页签里有「升级」（v1.11.0 新增）');
+
+// ---- v1.11.0 管理员在线升级页（**只预检，绝不点应用**） ----
+// ⚠️ 这段跑在**真实仓库根**上（render 的服务器没改 ALLEYU_UPGRADE_ROOT）——这正是它的价值：
+//    下面这条「预检前后 server/ + web/dist 的 sha256 清单未变」证明预检真的一个字节都没写。
+//    绝对不要在这里点「应用升级并重启」：那会把开发机上正在用的 server/ 换成包里的内容。
+{
+  const crypto = await import('node:crypto');
+  const hex = (b) => crypto.createHash('sha256').update(b).digest('hex');
+  // 本段在模块作用域靠前的位置，`ah` 要等下面才声明（TDZ）——自己拼一份管理员头，别引用它。
+  const upAh = { Authorization: 'Bearer ' + tk };
+  const treeHash = (dirs) => {
+    const out = [];
+    const walk = (p) => {
+      if (fs.statSync(p).isFile()) { out.push(path.relative(ROOT, p).split(path.sep).join('/') + ':' + hex(fs.readFileSync(p))); return; }
+      for (const n of fs.readdirSync(p).sort()) walk(path.join(p, n));
+    };
+    for (const d of dirs) walk(d);
+    return out.sort().join('\n');
+  };
+  const REPO_PARTS = [path.join(ROOT, 'server'), path.join(ROOT, 'web', 'dist'), path.join(ROOT, 'package.json')];
+
+  await page.locator('.tabs .t').filter({ hasText: '升级' }).click();
+  await page.waitForSelector('.up-msg, input[type=file]', { timeout: 8000 });
+  const upCard = page.locator('.card').filter({ hasText: '在线升级' });
+  ok((await upCard.locator('table.tb').first().innerText()).includes('正在运行'), '升级页显示「正在运行」的版本状态表');
+  const upStatus = await fetch(URL_BASE + '/api/upgrade/status', { headers: upAh }).then((r) => r.json());
+  ok(upStatus.upgrade_root === ROOT, `升级根就是本仓库根（${upStatus.upgrade_root}）——这条让「预检只读」的断言不是废话`);
+  const sysVer = await fetch(URL_BASE + '/api/system-info').then((r) => r.json());
+  ok((await upCard.locator('table.tb').first().innerText()).includes('v' + sysVer.version), '页面上显示的运行版本与 /api/system-info 一致');
+  ok((await upCard.locator('input[type=file]').count()) === 1, '升级页有选包输入框');
+  await page.screenshot({ path: path.join(IMG_DIR, '升级.png'), fullPage: true });
+
+  const applyBtn = page.locator('button').filter({ hasText: '应用升级并重启' });
+  const planBtn = page.locator('button').filter({ hasText: '预检' });
+  ok(await applyBtn.isDisabled(), '没选包时「应用升级并重启」是禁用的');
+
+  // 现打一个小包到系统临时目录（**不落仓库**）：整份 server/ 里挑 2 个文件 + 一个全新时间戳的 dist
+  const tmpPackDir = fs.mkdtempSync(path.join(os.tmpdir(), 'alleyu-render-pack-'));
+  const zipSvc = require(path.join(ROOT, 'server', 'services', 'zipService.js'));
+  const distLatest = (() => {
+    const d = path.join(ROOT, 'web', 'dist');
+    const all = fs.readdirSync(d).filter((n) => /^\d{8,}$/.test(n)).sort();
+    return all[all.length - 1];
+  })();
+  const ts = String(Number(distLatest) + 1);
+  const mkPack = (version, extra = []) => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+    pkg.version = version;
+    const list = [
+      { name: 'server/index.js', data: fs.readFileSync(path.join(ROOT, 'server', 'index.js')) },
+      { name: 'server/services/zipService.js', data: fs.readFileSync(path.join(ROOT, 'server', 'services', 'zipService.js')) },
+      { name: 'package.json', data: Buffer.from(JSON.stringify(pkg, null, 2)) },
+      { name: `web/dist/${ts}/index.html`, data: fs.readFileSync(path.join(ROOT, 'web', 'dist', distLatest, 'index.html')) },
+      { name: 'web/dist/.latest', data: Buffer.from(ts) },
+      ...extra,
+    ];
+    list.push({
+      name: 'manifest.json',
+      data: Buffer.from(JSON.stringify({
+        app: 'alleyu', kind: 'upgrade-pack', version, from_version: sysVer.version,
+        built_at: new Date().toISOString(), dist: ts,
+        files: list.map((e) => ({ path: e.name, size: e.data.length, sha256: hex(e.data) })),
+      }, null, 2)),
+    });
+    return zipSvc.buildZip(list);
+  };
+
+  const beforeHash = treeHash(REPO_PARTS);
+  let packPath = path.join(tmpPackDir, 'good.zip');
+  fs.writeFileSync(packPath, mkPack('9.9.9-render'));
+  await page.locator('input[type=file]').setInputFiles(packPath);
+  await page.waitForTimeout(200);
+  ok(await applyBtn.isDisabled(), '选了包但还没预检时「应用」仍然禁用（必须先预检）');
+  await planBtn.click();
+  await page.waitForSelector('details summary', { timeout: 15000 });
+  const planText = await upCard.innerText();
+  ok(/预检结果：v.+→ v9\.9\.9-render/.test(planText), '预检结果面板渲染出版本跃迁', planText.slice(0, 80));
+  ok(/新增/.test(planText) && /覆盖/.test(planText), '预检结果里有新增/覆盖计数');
+  ok(/没有写入任何文件/.test(planText), '页面明确告诉管理员「预检没有写入任何文件」');
+  ok(!(await applyBtn.isDisabled()), '预检通过后「应用」按钮才可用');
+  ok(treeHash(REPO_PARTS) === beforeHash, '预检全程只读：真实仓库 server/ + web/dist + package.json 的 sha256 清单未变');
+  await page.screenshot({ path: path.join(IMG_DIR, '升级-预检.png'), fullPage: true });
+
+  // 坏包（写 data/）→ 红字报错，且不出结果面板
+  packPath = path.join(tmpPackDir, 'bad.zip');
+  fs.writeFileSync(packPath, mkPack('9.9.9-render', [{ name: 'data/alleyu.sqlite', data: Buffer.from('x') }]));
+  await page.locator('input[type=file]').setInputFiles(packPath);
+  await page.waitForTimeout(200);
+  await planBtn.click();
+  await page.waitForTimeout(1500);
+  const errText = await page.locator('.up-msg').innerText();
+  ok(/data\//.test(errText) && /绝不允许/.test(errText), '非法包（试图写 data/）在页面上给出红字原因', errText.slice(0, 80));
+  ok((await upCard.locator('details summary').count()) === 0, '预检失败时不出「预检结果」面板（没通过就不给应用的机会）');
+  ok(await applyBtn.isDisabled(), '预检失败后「应用」按钮回到禁用（token 为空，没得点）');
+  ok(treeHash(REPO_PARTS) === beforeHash, '两次预检之后真实仓库依旧一个字节没变');
+  fs.rmSync(tmpPackDir, { recursive: true, force: true }); // 自检造的包只活在系统临时目录里
+}
 
 // v1.3.0：国际线路筛选 pill（库页）
 await page.goto(URL_BASE + '/#/library');

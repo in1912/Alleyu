@@ -61,9 +61,25 @@ function sseCollect(urlPath, ms) {
 
 // ---- 起服务（独立 DATA_DIR，不碰真实数据） ----
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'alleyu-check-'));
+
+// v1.11.0 在线升级：升级会**真的往磁盘写文件**，所以自检必须把「升级根目录」指到临时仓库副本，
+// 否则跑一次自检就把开发机的真实 server/ 换掉了（这是本仓库最不能破的规矩之一）。
+// 副本里只放升级会碰的三样：server/、web/dist、package.json；运行中的服务仍是真实仓库那份代码
+// （所以 ALLEYU_NO_RESTART=1 下"文件变了、进程没变"正好是我们要断言的状态）。
+const repoCopy = fs.mkdtempSync(path.join(os.tmpdir(), 'alleyu-repo-'));
+fs.cpSync(path.join(ROOT, 'server'), path.join(repoCopy, 'server'), { recursive: true });
+fs.mkdirSync(path.join(repoCopy, 'web'), { recursive: true });
+fs.cpSync(path.join(ROOT, 'web', 'dist'), path.join(repoCopy, 'web', 'dist'), { recursive: true });
+fs.copyFileSync(path.join(ROOT, 'package.json'), path.join(repoCopy, 'package.json'));
+
 const child = spawn(process.execPath, ['--no-warnings', 'server/index.js'], {
   cwd: ROOT,
-  env: { ...process.env, ALLEYU_AI_STUB: '1', PORT: String(PORT), DATA_DIR: dataDir, ALLEYU_WIKI_OFFLINE: '1' },
+  env: {
+    ...process.env, ALLEYU_AI_STUB: '1', PORT: String(PORT), DATA_DIR: dataDir, ALLEYU_WIKI_OFFLINE: '1',
+    ALLEYU_UPGRADE_ROOT: repoCopy, ALLEYU_WEB_ROOT: path.join(repoCopy, 'web'), ALLEYU_NO_RESTART: '1',
+    // 上传上限调到 2MB：真实包只有几百 KB，调小之后一条 ~2.5MB 的包就能把 413 通道端到端测掉
+    ALLEYU_UPGRADE_MAX_MB: '2',
+  },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let serverLog = '';
@@ -1136,6 +1152,283 @@ try {
   ok(r.status === 400, '脏配额值 -5 被拒（只认 -2/-1/0~9999）');
   r = await req(`/api/users/${regUid}`, { method: 'PUT', token: admin, body: { quota_guide: -1, guide_used: 0 } });
   ok(r.status === 200 && r.j.user.quota_guide === -1 && r.j.user.guide_used === 0 && r.j.user.quota.guide.limit === 2, '管理员可把用户清零并改回跟随默认（额度随即变 2）');
+
+  // ---- v1.11.0：管理员在线升级 ----
+  console.log('== 管理员在线升级（v1.11.0） ==');
+  {
+    // 包内版本号必须**不等于本仓库 package.json 的版本**：本组的收官断言要证明的正是
+    // 「文件换了、进程没重启」——两边同号就证明不了（发版当天 v1.11.0 正好和硬编码撞上了，
+    // 记这一笔：这类断言别写死版本字面量，要么从仓库版本派生，要么故意带个后缀）。
+    const REPO_VER = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
+    const PACK_VER = `${REPO_VER}-pack`;
+    const require2 = createRequire(path.join(ROOT, 'package.json'));
+    const zipSvc = require2(path.join(ROOT, 'server', 'services', 'zipService.js'));
+    const { createHash } = require2('node:crypto');
+    const hex = (b) => createHash('sha256').update(b).digest('hex');
+    // 「路径 + sha256」清单：用来证明预检只读、以及自检没碰到真实仓库
+    const manifest = (dirs) => {
+      const base = path.dirname(dirs[0]);
+      const out = [];
+      const walk = (p) => {
+        if (fs.statSync(p).isFile()) {
+          out.push(path.relative(base, p).split(path.sep).join('/') + ':' + hex(fs.readFileSync(p)));
+          return;
+        }
+        for (const n of fs.readdirSync(p).sort()) walk(path.join(p, n));
+      };
+      for (const d of dirs) if (fs.existsSync(d)) walk(d);
+      return out.sort().join('\n');
+    };
+    const repoDirs = [path.join(repoCopy, 'server'), path.join(repoCopy, 'web', 'dist'), path.join(repoCopy, 'package.json')];
+    const realDirs = [path.join(ROOT, 'server'), path.join(ROOT, 'web', 'dist'), path.join(ROOT, 'package.json')];
+    const realBefore = manifest(realDirs);
+
+    // 二进制上传（api 的 req 只发 JSON）
+    const rawReq = async (p, buf, { token, type = 'application/octet-stream' } = {}) => {
+      const headers = { 'Content-Type': type };
+      if (token) headers.Authorization = 'Bearer ' + token;
+      const res = await fetch(BASE + p, { method: 'POST', headers, body: buf });
+      const text = await res.text();
+      let j = null;
+      try { j = JSON.parse(text); } catch { /* 非 JSON */ }
+      return { status: res.status, j, text };
+    };
+    // 造包：manifest.files 逐条 sha256（服务端预检会逐条比对）；默认补上 package.json + manifest.json
+    const makePack = ({ entries = [], version = PACK_VER, dist = '', manifest: withManifest = true, app = 'alleyu', kind = 'upgrade-pack', maniVersion = null } = {}) => {
+      const list = entries.map((e) => ({ name: e.name, data: Buffer.isBuffer(e.data) ? e.data : Buffer.from(e.data) }));
+      if (!list.some((e) => e.name === 'package.json')) {
+        const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+        pkg.version = version;
+        list.push({ name: 'package.json', data: Buffer.from(JSON.stringify(pkg, null, 2)) });
+      }
+      if (withManifest) {
+        const mani = {
+          app, kind, version: maniVersion || version, from_version: '1.10.2', built_at: new Date().toISOString(), dist,
+          files: list.map((e) => ({ path: e.name, size: e.data.length, sha256: hex(e.data) })),
+        };
+        list.push({ name: 'manifest.json', data: Buffer.from(JSON.stringify(mani, null, 2)) });
+      }
+      return { zip: zipSvc.buildZip(list), names: list.map((e) => e.name) };
+    };
+    const nextDist = (offset = 1) => String(Number(latestDistOnDisk()) + offset);
+    const latestDistOnDisk = () => {
+      const d = path.join(repoCopy, 'web', 'dist');
+      const all = fs.readdirSync(d).filter((n) => /^\d{8,}$/.test(n)).sort();
+      return all[all.length - 1];
+    };
+    const distEntries = (ts, indexHtml = '<!doctype html><title>ALLEYU-NEW-DIST</title>') => ([
+      { name: `web/dist/${ts}/index.html`, data: indexHtml },
+      { name: `web/dist/${ts}/assets/app-${ts}.js`, data: 'console.log("new dist");' },
+      { name: 'web/dist/.latest', data: ts },
+    ]);
+    // 整份 server/（复刻 build-upgrade-pack 的口径：全量带，不做逐文件差分）
+    const serverEntries = () => {
+      const entries = [];
+      (function walk(dir, rel) {
+        for (const n of fs.readdirSync(dir).sort()) {
+          const f = path.join(dir, n);
+          if (fs.statSync(f).isDirectory()) walk(f, rel ? `${rel}/${n}` : n);
+          else entries.push({ name: (rel ? rel + '/' : '') + n, data: fs.readFileSync(f) });
+        }
+      })(path.join(ROOT, 'server'), 'server');
+      return entries;
+    };
+
+    // ---------- A) zip 编解码纯函数（不经过 HTTP） ----------
+    ok(zipSvc.crc32(Buffer.from('123456789')) === 0xCBF43926, 'zip：CRC32 已知向量（"123456789" → 0xCBF43926）');
+    {
+      const z = zipSvc.buildZip([{ name: '中文/说明.txt', data: Buffer.from('游巷升级包') }, { name: 'a/b.js', data: Buffer.from('x=1') }]);
+      const back = zipSvc.extractZip(z);
+      ok(back.length === 2 && back[0].name === '中文/说明.txt' && back[0].data.toString('utf8') === '游巷升级包'
+        && back[1].name === 'a/b.js' && back[1].data.toString('utf8') === 'x=1', 'zip：build → extract 往返（含中文名）');
+      const cdOff = z.readUInt32LE(z.length - 22 + 16);
+      ok((z.readUInt16LE(cdOff + 8) & 0x0800) !== 0, 'zip：非 ASCII 名字自动打 UTF-8 标志位（bit 11）');
+      ok(zipSvc.buildZip([{ name: 'same.js', data: Buffer.from('固定 mtime') }]).equals(
+        zipSvc.buildZip([{ name: 'same.js', data: Buffer.from('固定 mtime') }])), 'zip：同样内容打两次字节完全一致（mtime 固定）');
+      const z64 = Buffer.from(z); z64.writeUInt16LE(0xffff, z64.length - 22 + 10);
+      let e1 = null; try { zipSvc.extractZip(z64); } catch (e) { e1 = e; }
+      ok(e1 && /zip64/.test(e1.message), 'zip：zip64 哨兵值明确报错，而不是崩栈', e1 && e1.message);
+      const cut = Buffer.concat([z.subarray(0, cdOff + 5), z.subarray(z.length - 22)]);
+      let e2 = null; try { zipSvc.extractZip(cut); } catch (e) { e2 = e; }
+      ok(e2 && /中央目录越界|截断/.test(e2.message), 'zip：截断包给出可读原因（中央目录越界）', e2 && e2.message);
+      const rnd = require2('node:crypto').randomBytes(64); // 随机数据压不小 → STORE，改一个字节必然 CRC 失配
+      const zc = Buffer.from(zipSvc.buildZip([{ name: 'rnd.bin', data: rnd }]));
+      zc[30 + 'rnd.bin'.length + 5] ^= 0xff;
+      let e3 = null; try { zipSvc.extractZip(zc); } catch (e) { e3 = e; }
+      ok(e3 && /CRC32/.test(e3.message), 'zip：改一个字节 → 逐条 CRC32 校验失败', e3 && e3.message);
+    }
+
+    // ---------- B) 鉴权与状态 ----------
+    r = await req('/api/upgrade/status');
+    ok(r.status === 401, '未登录访问 /api/upgrade/status 401（没有把 upgrade 误加进 EXEMPT）');
+    r = await req('/api/upgrade/status', { token: u1 });
+    ok(r.status === 403, '普通用户看升级状态 403');
+    r = await rawReq('/api/upgrade/plan', Buffer.from('x'), { token: u1 });
+    ok(r.status === 403, '普通用户上传升级包 403（路由级第二层闸）');
+    r = await req('/api/upgrade/apply', { method: 'POST', token: u1, body: { token: 'x' } });
+    ok(r.status === 403, '普通用户调升级应用 403');
+    r = await req('/api/upgrade/status', { token: admin });
+    ok(r.status === 200 && r.j.upgrade_root === repoCopy && r.j.max_upload_mb === 2,
+      'status 如实报告升级根 = 临时仓库副本、上传上限 = 环境变量值', JSON.stringify({ root: r.j.upgrade_root, mb: r.j.max_upload_mb }));
+
+    // ---------- C) 预检（只读，绝不写盘） ----------
+    const beforePlan = manifest(repoDirs);
+    const badCases = [
+      { name: '非 zip 内容', pack: null, raw: Buffer.from('这不是一个 zip 文件，只是随便一段文字'), status: 400, code: 'BAD_ZIP', match: /zip|EOCD|截断/ },
+      { name: '路径穿越 server/../evil.js', pack: { entries: [{ name: 'server/../evil.js', data: 'x' }] }, status: 400, code: 'PATH_TRAVERSAL', match: /\.\.|空段/ },
+      { name: '绝对路径 /etc/passwd', pack: { entries: [{ name: '/etc/passwd', data: 'x' }] }, status: 400, code: 'PATH_TRAVERSAL', match: /绝对路径/ },
+      { name: '盘符路径 C:/Windows/x.js', pack: { entries: [{ name: 'C:/Windows/x.js', data: 'x' }] }, status: 400, code: 'PATH_TRAVERSAL', match: /盘符/ },
+      { name: '反斜杠分隔符 server\\db.js', pack: { entries: [{ name: 'server\\db.js', data: 'x' }] }, status: 400, code: 'PATH_TRAVERSAL', match: /反斜杠/ },
+      { name: '写 data/alleyu.sqlite', pack: { entries: [{ name: 'data/alleyu.sqlite', data: 'x' }] }, status: 400, code: 'FORBIDDEN_PATH', match: /data\// },
+      { name: '白名单外 web/src/App.vue', pack: { entries: [{ name: 'web/src/App.vue', data: 'x' }] }, status: 400, code: 'NOT_ALLOWED', match: /白名单/ },
+      { name: '白名单外 node_modules/express/index.js', pack: { entries: [{ name: 'node_modules/express/index.js', data: 'x' }] }, status: 400, code: 'NOT_ALLOWED', match: /白名单/ },
+      { name: '白名单外 scripts/x.mjs', pack: { entries: [{ name: 'scripts/x.mjs', data: 'x' }] }, status: 400, code: 'NOT_ALLOWED', match: /白名单/ },
+      { name: '非 ASCII 路径 server/工具.js', pack: { entries: [{ name: 'server/工具.js', data: 'x' }] }, status: 400, code: 'NON_ASCII', match: /ASCII/ },
+      { name: '缺 manifest.json', pack: { entries: [{ name: 'server/a.js', data: 'x' }], manifest: false }, status: 400, code: 'BAD_MANIFEST', match: /manifest/ },
+      { name: 'app 不是 alleyu', pack: { entries: [{ name: 'server/a.js', data: 'x' }], app: 'workbench' }, status: 400, code: 'BAD_MANIFEST', match: /alleyu/ },
+      { name: 'manifest.version 与包内 package.json 不一致', pack: { entries: [{ name: 'server/a.js', data: 'x' }], version: '1.11.0', maniVersion: '9.9.9' }, status: 400, code: 'BAD_MANIFEST', match: /不一致/ },
+      { name: 'server 代码语法错', pack: { entries: [{ name: 'server/broken.js', data: 'function ( {{{{ ' }] }, status: 400, code: 'SYNTAX', match: /语法错误/ },
+      { name: 'dist 时间戳不比现役新', pack: { entries: distEntries(latestDistOnDisk()), dist: latestDistOnDisk() }, status: 400, code: 'STALE_DIST', match: /不比现役/ },
+      { name: 'dist 缺 index.html', pack: { entries: [{ name: `web/dist/${nextDist()}/assets/a.js`, data: 'x' }, { name: 'web/dist/.latest', data: nextDist() }], dist: nextDist() }, status: 400, code: 'INCOMPLETE_DIST', match: /index\.html/ },
+    ];
+    for (const c of badCases) {
+      const buf = c.raw || makePack(c.pack).zip;
+      const rr = await rawReq('/api/upgrade/plan', buf, { token: admin });
+      ok(rr.status === c.status && rr.j && rr.j.code === c.code && c.match.test(rr.j.error || ''),
+        `预检拒绝：${c.name} → ${c.status} ${c.code}`, `实际 ${rr.status} ${rr.j && rr.j.code} ${rr.j && rr.j.error}`);
+    }
+    ok(manifest(repoDirs) === beforePlan, `预检全程只读：${badCases.length} 次被拒的预检之后，仓库副本的「路径+sha256」清单一字未变`);
+
+    // ---------- D) 应用与落盘 ----------
+    r = await req('/api/upgrade/apply', { method: 'POST', token: admin, body: {} });
+    ok(r.status === 400 && r.j.code === 'BAD_TOKEN', '没带 token 就应用 → 400 BAD_TOKEN');
+    r = await req('/api/upgrade/apply', { method: 'POST', token: admin, body: { token: 'deadbeef'.repeat(4) } });
+    ok(r.status === 400 && r.j.code === 'BAD_TOKEN', '瞎编的 token → 400 BAD_TOKEN');
+
+    // 预检「整份 server/ + 全新 dist」的包 → 落地
+    const ts1 = nextDist();
+    const probeRel = 'server/services/zipService.js'; // 拿一个必然存在的文件当探针
+    const probeOld = fs.readFileSync(path.join(ROOT, probeRel));
+    // 探针内容改成和磁盘不同（多一行注释），这样「内容真的变了」是可验证的
+    const probeNew = Buffer.concat([probeOld, Buffer.from('\n// check-alleyu 探针标记 ' + ts1 + '\n')]);
+    const entries1 = serverEntries();
+    entries1[entries1.findIndex((e) => e.name === probeRel)] = { name: probeRel, data: probeNew };
+    entries1.push(...distEntries(ts1));
+    const pack1 = makePack({ entries: entries1, version: PACK_VER, dist: ts1 });
+
+    let rp = await rawReq('/api/upgrade/plan', pack1.zip, { token: admin });
+    ok(rp.status === 200 && rp.j.token && rp.j.plan.summary.files_total === pack1.names.length,
+      '预检通过：整份 server/ + 新 dist 的包（含逐文件清单）', JSON.stringify(rp.j && rp.j.error));
+    ok(rp.j.plan.summary.overwrite > 0 && rp.j.plan.restart_required === true, '预检如实报告「会覆盖 N 个文件、需要重启」');
+    ok(rp.j.plan.summary.dep_changed === false, '预检比对依赖：这个包没动 dependencies');
+    const planToken = rp.j.token;
+    const backupCount0 = fs.existsSync(path.join(dataDir, 'upgrades'))
+      ? fs.readdirSync(path.join(dataDir, 'upgrades')).filter((n) => n.startsWith('backup_')).length : 0;
+
+    // 真正应用的**前置状态**：磁盘上还是旧的
+    r = await req('/api/upgrade/apply', { method: 'POST', token: admin, body: { token: planToken } });
+    ok(r.status === 200 && r.j.applied === true, '应用升级：200 applied', JSON.stringify(r.j));
+    ok(fs.readFileSync(path.join(repoCopy, probeRel)).equals(probeNew),
+      '落盘探针：被覆盖的 server 文件内容真的变成了包里的新内容');
+    ok(fs.existsSync(path.join(repoCopy, 'web', 'dist', ts1, 'index.html')),
+      '落盘探针：全新的前端目录已就位');
+    ok(fs.readFileSync(path.join(repoCopy, 'web', 'dist', '.latest'), 'utf8').trim() === ts1,
+      'web/dist/.latest 指针更新到新目录');
+    const bk = fs.readdirSync(path.join(dataDir, 'upgrades')).filter((n) => n.startsWith('backup_'));
+    ok(bk.length === backupCount0 + 1
+      && fs.readFileSync(path.join(dataDir, 'upgrades', bk[bk.length - 1], probeRel)).equals(probeOld),
+      '被覆盖文件的**原文**逐字节备份到 data/upgrades/backup_<ts>/（可回滚）',
+      bk.length ? bk[bk.length - 1] : '没有备份目录');
+    ok(r.j.restart === 'suppressed' && r.j.restart_required === true && /ALLEYU_NO_RESTART=1/.test(r.j.restart_note || ''),
+      '回包**如实**说：需要重启 + 被 ALLEYU_NO_RESTART=1 抑制了（没有假装重启过）', JSON.stringify({ restart: r.j.restart, note: r.j.restart_note }));
+    r = await req('/api/upgrade/logs?limit=5', { token: admin });
+    const l0 = r.j.logs[0];
+    ok(r.status === 200 && l0 && l0.to_version === PACK_VER && l0.restart_suppressed === true && l0.ok === true
+      && l0.files_overwritten > 0 && l0.backup_dir,
+      'upgrade_logs 落库：版本/覆盖数/备份目录/重启被抑制 全部如实记录', JSON.stringify(l0));
+    r = await req('/api/upgrade/status', { token: admin });
+    ok(r.j.current_version !== r.j.package_json_version && r.j.package_json_version === PACK_VER,
+      'status 同时给「进程在跑的版本」与「磁盘 package.json 的版本」——两者不一致正是"文件换了、没重启"的诚实信号',
+      JSON.stringify({ run: r.j.current_version, disk: r.j.package_json_version }));
+    r = await req('/api/upgrade/apply', { method: 'POST', token: admin, body: { token: planToken } });
+    ok(r.status === 400 && r.j.code === 'BAD_TOKEN', 'token 一次性：同一个 token 再应用一次被拒（不会二次写盘）');
+
+    // 静态路由确实选中了新目录（ALLEYU_WEB_ROOT 指着仓库副本，所以读的就是刚升级的那份）
+    r = await req('/');
+    ok(r.status === 200 && /ALLEYU-NEW-DIST/.test(r.text), '静态服务真的选了新 dist（GET / 返回新 index.html，重启之外的前端升级立刻生效）');
+
+    // 依赖变化：预检 warning + apply 409，带 allow_dep_change 才放行
+    {
+      const ts2 = nextDist();
+      const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+      pkg.version = PACK_VER + '-dep';
+      pkg.dependencies = { ...pkg.dependencies, 'left-pad': '^1.3.0' };
+      const pk = makePack({
+        entries: [{ name: 'package.json', data: Buffer.from(JSON.stringify(pkg, null, 2)) }, ...distEntries(ts2)],
+        version: PACK_VER + '-dep', dist: ts2,
+      });
+      const rr = await rawReq('/api/upgrade/plan', pk.zip, { token: admin });
+      ok(rr.status === 200 && rr.j.plan.summary.dep_changed === true
+        && rr.j.plan.warnings.some((w) => /npm install/.test(w)), '依赖清单变化：预检给警告并点名要跑 npm install', JSON.stringify(rr.j.plan && rr.j.plan.warnings));
+      const ra = await req('/api/upgrade/apply', { method: 'POST', token: admin, body: { token: rr.j.token } });
+      ok(ra.status === 409 && ra.j.code === 'DEP_CHANGED', '依赖变化时应用被拦成 409 DEP_CHANGED（必须先人工装依赖）');
+      const rb = await req('/api/upgrade/apply', { method: 'POST', token: admin, body: { token: rr.j.token, allow_dep_change: true } });
+      // 带 package.json 的包一律算「需要重启」：版本号与依赖都只有新进程才看得见（require 缓存），
+      // 不重启就会出现「文件是新的、页面还写着旧版本号」这种说不清的状态。所以回包也在自检里被钉住。
+      ok(rb.status === 200 && rb.j.applied === true && rb.j.restart_required === true && rb.j.restart === 'suppressed',
+        '被 409 拒绝后 token 仍然可用（管理员点「仍要继续」不用重传包）；带 package.json 的包如实说「需要重启」', JSON.stringify(rb.j && rb.j.error));
+      ok(fs.readFileSync(path.join(repoCopy, 'web', 'dist', '.latest'), 'utf8').trim() === ts2, '.latest 跟到第二份 dist');
+    }
+
+    // 上传超限：2MB 上限 + 2.5MB 包 → 413 TOO_LARGE（走的是 index.js 的错误兜底分支）
+    {
+      const ts3 = nextDist();
+      const pk = makePack({
+        entries: [...distEntries(ts3), { name: `web/dist/${ts3}/assets/pad.bin`, data: require2('node:crypto').randomBytes(2.5 * 1024 * 1024) }],
+        version: '1.11.2', dist: ts3,
+      });
+      const rr = await rawReq('/api/upgrade/plan', pk.zip, { token: admin });
+      ok(rr.status === 413 && rr.j && rr.j.code === 'TOO_LARGE',
+        '超过上传上限 → 413 TOO_LARGE（错误兜底把 body-parser 的 413 还原成语义化 JSON）', `实际 ${rr.status} ${rr.j && rr.j.code}`);
+    }
+
+    // 备份保留份数：设成 2，再做 3 次覆盖升级，只剩 2 份
+    {
+      r = await req('/api/settings', { method: 'PUT', token: admin, body: { upgrade_keep_backups: 2 } });
+      ok(r.status === 200, '在线升级保留份数可设（upgrade_keep_backups=2）');
+      r = await req('/api/settings', { method: 'PUT', token: admin, body: { upgrade_keep_backups: 0 } });
+      ok(r.status === 400, '保留 0 份被拒（刚升完就删回滚材料没有意义）');
+      // 基准用**磁盘现状**的 package.json：这样这组断言只考验保留策略，
+      // 不会被别的用例（比如上面改过依赖的那包）留下的差异误判成 DEP_CHANGED。
+      const diskPkgBuf = fs.readFileSync(path.join(repoCopy, 'package.json'));
+      const diskPkgVer = JSON.parse(diskPkgBuf.toString('utf8')).version;
+      for (let i = 0; i < 3; i++) {
+        const ts = nextDist();
+        const pk = makePack({
+          entries: [
+            { name: 'package.json', data: diskPkgBuf },
+            { name: 'server/db.js', data: Buffer.concat([fs.readFileSync(path.join(ROOT, 'server', 'db.js')), Buffer.from(`\n// 保留策略测试 ${i}\n`)]) },
+            ...distEntries(ts),
+          ],
+          version: diskPkgVer, dist: ts,
+        });
+        const rr = await rawReq('/api/upgrade/plan', pk.zip, { token: admin });
+        const ra = await req('/api/upgrade/apply', { method: 'POST', token: admin, body: { token: rr.j.token } });
+        if (ra.status !== 200) { ok(false, '保留策略测试：第 ' + (i + 1) + ' 次升级成功', JSON.stringify(ra.j)); break; }
+      }
+      const left = fs.readdirSync(path.join(dataDir, 'upgrades')).filter((n) => n.startsWith('backup_'));
+      ok(left.length === 2, `备份保留 2 份：同一秒内连做 3 次覆盖升级后只剩 2 个备份目录（实际 ${left.length}）——这一条同时守着「同秒两次升级不能挤进同一个 backup 目录」`);
+      r = await req(`/api/upgrade/backup/${left[0]}/download`, { token: admin });
+      ok(r.status === 200 && r.text.length > 0 && r.headers.get('content-type').includes('zip'),
+        '备份可下载（浏览器里就能拿回滚材料）', `status=${r.status}`);
+      r = await req('/api/upgrade/backup/..%2f..%2fpackage.json/download', { token: admin });
+      ok(r.status === 404, '备份下载的路径穿越被拒（只认 backup_<14位时间戳>，%2f 解码也不放行）');
+    }
+
+    // 收尾：真实仓库一个字都没被动过（自检绝不污染开发机）
+    ok(manifest(realDirs) === realBefore, '自检全程没碰真实仓库：D:\\cc\\Alleyu 的 server/ + web/dist + package.json 清单未变');
+    console.log(`   （升级根 = 临时副本 ${repoCopy}；真实仓库 = ${ROOT}）`);
+  }
 
   // ---- 在线（真实外网） ----
   if (ONLINE) {

@@ -294,10 +294,13 @@ function selectUrl(e) {
 async function openShare() {
   shareDlg.value = true;
   shareMsg.value = '';
+  // ⚠️ 顺序要紧：先拿到 share_base 再取链接列表。反过来的话，列表一到手 .share-row 就渲染出来了
+  //    （shareUrl() 这时还在用兜底的 location），等到 /auth/me 回来才变成配的域名——
+  //    中间那一帧显示/复制出去的就是别人打不开的 localhost 链接（v1.10.2 的 render 断言逮到过）。
+  try { shareBase.value = (await api('/auth/me')).share_base || ''; } catch { /* 拿不到就用当前地址 */ }
   try {
     shares.value = (await api('/guides/' + id + '/shares')).shares;
   } catch (e) { alert(e.message); }
-  try { shareBase.value = (await api('/auth/me')).share_base || ''; } catch { /* 拿不到就用当前地址 */ }
 }
 async function createShare() {
   shareMsg.value = '';

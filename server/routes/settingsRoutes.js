@@ -43,12 +43,31 @@ r.get('/', (req, res) => {
     quota_default_guide: String(getSetting('quota_default_guide') || ''),
     quota_default_journal: String(getSetting('quota_default_journal') || ''),
     public_base_url: String(getSetting('public_base_url') || ''),
+    upgrade_keep_backups: String(getSetting('upgrade_keep_backups') || ''),
+    upgrade_keep_dist: String(getSetting('upgrade_keep_dist') || ''),
   });
 });
+
+// 在线升级保留份数（v1.11.0）：留空 = 用默认值（备份 5 份 / 前端目录 2 份）。
+// 只认 1~20 的整数：0 会让「刚升完就把回滚材料删了」，没有意义。
+function keepSetting(raw) {
+  const s = String(raw === undefined || raw === null ? '' : raw).trim();
+  if (!s) return { val: '' };
+  const n = Number(s);
+  if (!Number.isInteger(n) || n < 1 || n > 20) return { bad: true };
+  return { val: String(n) };
+}
 
 r.put('/', (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: '仅管理员' });
   const { amap_key } = req.body || {};
+  for (const key of ['upgrade_keep_backups', 'upgrade_keep_dist']) {
+    if (req.body && req.body[key] !== undefined) {
+      const k = keepSetting(req.body[key]);
+      if (k.bad) return res.status(400).json({ error: '升级保留份数要留空（用默认）或填 1~20 的整数' });
+      setSetting(key, k.val);
+    }
+  }
   if (amap_key !== undefined) {
     if (amap_key && !/^[0-9a-f]{32}$/.test(String(amap_key).trim())) {
       return res.status(400).json({ error: '高德 Key 格式应为 32 位十六进制' });

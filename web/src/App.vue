@@ -1,5 +1,5 @@
 <template>
-  <div v-if="['login', 'register', 'home', 'share'].includes(route.name)" class="full">
+  <div v-if="isFull" class="full">
     <router-view />
   </div>
   <div v-else class="shell">
@@ -19,13 +19,14 @@
       <router-view @refresh-me="() => loadMe(true)" />
     </main>
 
-    <!-- v1.12.0 手机端底栏：桌面 CSS 隐藏。四项用 <a>（不要用 button）。 -->
+    <!-- v1.12.0 手机端底栏：桌面 CSS 隐藏。用 <a>（不要用 button）。
+         v1.13.0 改为五项：生成攻略/我的攻略/生成游记/社区/我的（用户拍板）。 -->
     <nav class="m-nav">
       <a v-for="n in mobileItems" :key="n.to" class="m-item" :class="{ on: isOn(n) }" :href="'#' + n.to">
         <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" v-html="ICONS[n.ic]"></svg></span>
         <span class="mtxt">{{ n.label }}</span>
       </a>
-      <!-- 用户拍板：手机底栏恰好四项，管理员才多一个「更多」。
+      <!-- 手机底栏五项（v1.13.0），管理员才多一个「更多」。
            普通用户没有「更多」时，天气走首页快捷入口、回首页/退出在「我的」页底部。 -->
       <button v-if="session.me?.role === 'admin' && moreItems.length" class="m-item m-more" :class="{ on: sheetOpen }" @click="sheetOpen = !sheetOpen">
         <span class="ic">⋯</span>
@@ -43,6 +44,9 @@
       </div>
     </div>
   </div>
+  <!-- v1.13.0 客服悬浮入口：右下角单色耳麦；留言页自身不显示。
+       游客是整页布局，手机端要抬到底栏之上（fab-shell）。 -->
+  <FeedbackFab v-if="route.name !== 'feedback'" :class="{ 'fab-shell': !isFull }" />
 </template>
 
 <script setup>
@@ -50,6 +54,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api, setToken, token } from './api/index.js';
 import { session, loadMe, clearSession, navVisible } from './stores/session.js';
+import FeedbackFab from './components/FeedbackFab.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -64,6 +69,7 @@ const ICONS = {
   users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
   pen: '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a15 15 0 0 1 0 18"/><path d="M12 3a15 15 0 0 0 0 18"/>',
 };
 
 // v1.10.0：城市景点库/设置/用户管理都是管理员专属（adminOnly），
@@ -74,6 +80,7 @@ const ALL_NAV = [
   { to: '/plan', label: '生成攻略', ic: 'compass', page: 'guides' },
   { to: '/history', label: '我的攻略', ic: 'book', page: 'guides' },
   { to: '/journals', label: '生成游记', ic: 'pen', page: 'guides' }, // v1.8.0 游记整理（在「我的攻略」下方）
+  { to: '/community', label: '社区', ic: 'globe', always: true }, // v1.13.0 公开社区（游客也可看）
   { to: '/library', label: '城市景点库', ic: 'map', page: 'library', adminOnly: true },
   { to: '/weather', label: '天气', ic: 'weather', page: 'weather' },
   { to: '/account', label: '我的', ic: 'user', always: true },
@@ -81,13 +88,20 @@ const ALL_NAV = [
   { to: '/users', label: '用户管理', ic: 'users', page: 'settings', adminOnly: true },
 ];
 
-// 手机端底栏：恰好四项（用户点名）。管理员多一个「更多」，其余页签收进浮层。
+// 手机端底栏：v1.13.0 起五项（用户点名加「社区」）。管理员多一个「更多」，其余页签收进浮层。
 const MOBILE_NAV = [
   { to: '/plan', label: '生成攻略', ic: 'compass', page: 'guides' },
   { to: '/history', label: '我的攻略', ic: 'book', page: 'guides' },
   { to: '/journals', label: '生成游记', ic: 'pen', page: 'guides' },
+  { to: '/community', label: '社区', ic: 'globe', always: true },
   { to: '/account', label: '我的', ic: 'user', always: true },
 ];
+
+// 游客打开社区/留言页时也要能看：这三个页面在未登录时用整页布局（带自己的品牌头），
+// 登录后仍走 .shell，保留侧栏/底栏。
+const GUEST_FULL = ['community', 'community-detail', 'feedback'];
+const isFull = computed(() => ['login', 'register', 'home', 'share'].includes(route.name)
+  || (GUEST_FULL.includes(route.name) && !token() && !session.me));
 const sheetOpen = ref(false);
 const navItems = computed(() => ALL_NAV.filter((n) => navVisible(n)));
 const mobileItems = computed(() => MOBILE_NAV.filter((n) => navVisible(n)));

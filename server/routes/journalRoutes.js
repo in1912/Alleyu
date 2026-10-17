@@ -12,6 +12,7 @@ const { checkQuota } = require('../quota');
 const { imageMeta, isWebp } = require('../services/imageSize');
 const { isHtml } = require('../services/htmlMd');
 const { sanitizeJournalHtml } = require('../services/htmlSanitize');
+const community = require('../services/communityService');
 
 const CONTENT_MAX = 400000; // 正文上限（v1.12.0 从 200000 提到 400000：HTML 标签占体积）
 
@@ -124,6 +125,8 @@ r.put('/:id', (req, res) => {
 r.delete('/:id', (req, res) => {
   const j = myJournal(req, req.params.id);
   if (!j) return res.status(404).json({ error: '游记不存在' });
+  // v1.13.0：原游记删除 → 社区里对应的分享自动撤下（先撤，照片文件随后才被删）
+  try { community.removePostsBySource('journal', j.id); } catch { /* 社区清理失败不拦删除 */ }
   const dir = path.join(PHOTO_DIR, String(j.id));
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* 尽力 */ }
   db.prepare('DELETE FROM journal_photos WHERE journal_id=?').run(j.id);

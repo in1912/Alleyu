@@ -8,6 +8,7 @@ const { generateGuide } = require('../services/guideService');
 const { renderGuidePdf } = require('../services/pdfService');
 const { globalConfig } = require('../services/aiService');
 const { checkQuota } = require('../quota');
+const community = require('../services/communityService');
 
 const r = express.Router();
 
@@ -113,6 +114,8 @@ r.post('/:id/regenerate', async (req, res) => {
 r.delete('/:id', (req, res) => {
   const g = db.prepare('SELECT id FROM guides WHERE id=? AND user_id=?').get(Number(req.params.id), req.user.id);
   if (!g) return res.status(404).json({ error: '攻略不存在' });
+  // v1.13.0：原攻略删除 → 社区里对应的分享自动撤下
+  try { community.removePostsBySource('guide', g.id); } catch { /* 社区清理失败不拦删除 */ }
   db.prepare('DELETE FROM shares WHERE guide_id=?').run(g.id); // SQLite 默认不强制 FK，手动清
   db.prepare('DELETE FROM guides WHERE id=?').run(g.id);
   res.json({ ok: true });

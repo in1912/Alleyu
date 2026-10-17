@@ -1224,11 +1224,174 @@ try {
     console.log('  ⚠️ 无中文字体，HTML 正文 PDF 断言跳过（PUT/净化/回读已断言）');
   }
 
+  // ---- v1.13.0：社区（攻略/游记公开快照）+ 客服留言 ----
+  console.log('== 社区（v1.13.0） ==');
+  // ① 公开渲染管线（纯函数，不碰库）：用户 HTML 必须变成字面文字，链接/图片按白名单重建
+  const ch = require2(path.join(ROOT, 'server', 'services', 'communityHtml.js'));
+  const dirty = ch.renderCommunityHtml([
+    '# 标题', '<img src=x onerror=alert(1)>', '<p style="color:red">x</p>',
+    '[js](javascript:alert(1)) [ent](&#106;avascript:alert(1))',
+    '![d](data:image/png;base64,AAA) ![h](http://evil/x.png) ![s](https://ok/x.png)',
+    '![p](photo:1) ![m](/api/amap/mapimg/abc.png)', '<script>alert(2)</script>',
+  ].join('\n'));
+  ok(!/<script|onerror=|style=|javascript:/i.test(dirty), '公开正文：script/onerror/style/javascript: 全部消失', dirty.slice(0, 200));
+  ok(dirty.includes('&lt;script&gt;alert(2)&lt;/script&gt;'), '原始 HTML 被转义成字面文字（不执行）');
+  ok(dirty.includes('src="photo:1"') && dirty.includes('src="/api/amap/mapimg/abc.png"') && dirty.includes('src="https://ok/x.png"'),
+    '白名单图片保留：photo:N / 本站地图缓存 / https 外链');
+  ok(!dirty.includes('data:image') && !dirty.includes('http://evil'), 'data: 与 http: 图片被丢弃（混合内容/二进制不进正文）');
+  ok(dirty.includes('<a href="#">js</a>') && dirty.includes('<a href="#">ent</a>'), 'javascript: 链接（含实体编码绕过）都替换成 #');
+  ok(ch.extractGuideCover(JSON.stringify([{ type: 'cover', url: '/api/amap/mapimg/aa.png' }, { type: 'photo', url: 'https://x/y.png' }]), '')
+    === '/api/amap/mapimg/aa.png', '攻略封面优先 images_json 的 cover');
+  ok(ch.extractGuideCover('[]', '![a](http://bad/x.png)\n![b](https://ok/y.png)') === 'https://ok/y.png',
+    '没有 cover 时回退正文第一张白名单图片（跳过 http:）');
+
+  // ② 准备一篇 done 攻略（旧的 gid 上面已删，这里新建一篇专供社区断言）
+  r = await req('/api/guides', { method: 'POST', token: u1, body: { destination: '苏州', days: 2 } });
+  const cgid = r.j.id;
+  ok(r.status === 200 && cgid, '社区测试：新建一篇攻略');
+  let cguide = null;
+  for (let i = 0; i < 90; i++) {
+    await sleep(1000);
+    const g = await req(`/api/guides/${cgid}`, { token: u1 });
+    if (g.j.guide && (g.j.guide.status === 'done' || g.j.guide.status === 'error')) { cguide = g.j.guide; break; }
+  }
+  ok(cguide && cguide.status === 'done', '社区测试：攻略生成完成', cguide ? cguide.error : '超时');
+
+  // ③ 游客可读、未登录不可写
+  r = await req('/api/community/feed');
+  ok(r.status === 200 && Array.isArray(r.j.posts), '免登录读社区列表 200');
+  r = await req('/api/community/publish', { method: 'POST', body: { kind: 'guide', source_id: cgid } });
+  ok(r.status === 401, '未登录发布到社区 401');
+  r = await req('/api/community/feed/999999');
+  ok(r.status === 404, '不存在的分享 404（而不是 401）');
+
+  // ④ 发布/重复发布/归属
+  r = await req('/api/community/publish', { method: 'POST', token: u2, body: { kind: 'guide', source_id: cgid } });
+  ok(r.status === 404, '别人的攻略不能发布（404）');
+  r = await req('/api/community/by-source?kind=guide&source_id=' + cgid, { token: u2 });
+  ok(r.status === 404, 'by-source 对非作者 404（不泄露存在性）');
+  r = await req('/api/community/publish', { method: 'POST', token: u1, body: { kind: 'guide', source_id: cgid } });
+  const cgPost = r.j.post && r.j.post.id;
+  ok(r.status === 200 && cgPost && r.j.post.kind === 'guide' && r.j.created === true, '作者发布攻略到社区（created=true）');
+  r = await req('/api/community/publish', { method: 'POST', token: u1, body: { kind: 'guide', source_id: cgid } });
+  ok(r.status === 200 && r.j.post.id === cgPost && r.j.created === false, '重复发布=更新同一份快照（不新增、不换 id）');
+  r = await req('/api/community/by-source?kind=guide&source_id=' + cgid, { token: u1 });
+  ok(r.status === 200 && r.j.shared === true && r.j.post.id === cgPost, '作者 by-source 看到已发布');
+  r = await req('/api/community/mine', { token: u1 });
+  ok(r.status === 200 && r.j.posts.some((p) => p.id === cgPost), '我的分享列表含这条');
+
+  // ⑤ 公开详情：四要素齐、不含内部字段、无脚本
+  r = await req('/api/community/feed/' + cgPost);
+  const cgDetail = r.j.post || {};
+  ok(r.status === 200 && cgDetail.title && cgDetail.author_name === '用户一' && cgDetail.published_at && 'cover_url' in cgDetail,
+    '分享详情带 标题/作者/日期/封面 四要素', JSON.stringify(cgDetail).slice(0, 200));
+  ok(!('user_id' in cgDetail) && !('source_id' in cgDetail) && !('prompt' in cgDetail), '公开详情不泄露 user_id/source_id/prompt');
+  ok(!!cgDetail.content_html && cgDetail.content_html.includes('<h2'), '公开详情带渲染后的正文 HTML');
+  ok(!/<script|onerror=|javascript:/i.test(cgDetail.content_html || ''), '公开正文无脚本/事件属性');
+  r = await req('/api/community/feed');
+  const cgCard = r.j.posts.find((p) => p.id === cgPost);
+  ok(cgCard && cgCard.title === cgDetail.title && !('content_html' in cgCard), '列表卡只给卡片字段（不含正文）');
+
+  // ⑥ 删除：非作者 403、作者 200；再发一次留给「删源级联」
+  r = await req('/api/community/posts/' + cgPost, { method: 'DELETE', token: u2 });
+  ok(r.status === 403, '非作者撤下分享 403');
+  r = await req('/api/community/posts/' + cgPost, { method: 'DELETE', token: u1 });
+  ok(r.status === 200, '作者撤下分享 200');
+  r = await req('/api/community/feed/' + cgPost);
+  ok(r.status === 404, '撤下后详情 404');
+  r = await req('/api/community/publish', { method: 'POST', token: u1, body: { kind: 'guide', source_id: cgid } });
+  const cgPost2 = r.j.post && r.j.post.id;
+  ok(r.status === 200 && cgPost2 !== cgPost, '再次发布得到新 id（旧行已删）');
+
+  // ⑦ 游记：发布 + 匿名看照片/封面
+  r = await req('/api/community/publish', { method: 'POST', token: u1, body: { kind: 'journal', source_id: jid } });
+  const cjPost = r.j.post && r.j.post.id;
+  ok(r.status === 200 && cjPost, '作者发布游记到社区');
+  r = await req('/api/community/feed/' + cjPost);
+  const cjDetail = r.j.post || {};
+  ok(r.status === 200 && Array.isArray(cjDetail.photos) && cjDetail.photos.length >= 1,
+    '游记分享带冻结的照片快照（sort/width/height）', JSON.stringify(cjDetail.photos || []).slice(0, 160));
+  ok(cjDetail.photos.every((p) => !('filename' in p)), '照片快照只回 sort/width/height（文件名不外泄）');
+  r = await req('/api/community/feed/' + cjPost + '/cover');
+  ok(r.status === 200 && (r.headers.get('content-type') || '').includes('image/png'), '匿名可看游记封面（PNG）');
+  const someSort = cjDetail.photos[0] && cjDetail.photos[0].sort;
+  r = await req('/api/community/feed/' + cjPost + '/photos/' + someSort + '/file');
+  ok(r.status === 200 && (r.headers.get('content-type') || '').includes('image/png'), '匿名可看社区照片（按快照 sort）');
+  r = await req('/api/community/feed/' + cjPost + '/photos/999/file');
+  ok(r.status === 404, '未知 sort 的照片 404');
+
+  // ⑧ 客服留言
+  console.log('== 客服留言（v1.13.0） ==');
+  r = await req('/api/feedback', { method: 'POST', body: { body: '未登录不该能发' } });
+  ok(r.status === 401, '未登录调 /feedback 401（只有 /feedback/open 免登录）');
+  r = await req('/api/feedback/admin');
+  ok(r.status === 401, '未登录读全部留言 401');
+  r = await req('/api/feedback/admin', { token: u1 });
+  ok(r.status === 403, '普通用户读全部留言 403');
+  r = await req('/api/feedback/open?key=not-a-key');
+  ok(r.status === 400, '游客 key 非法 400');
+  r = await req('/api/feedback/open', { method: 'POST', body: { body: 'x'.repeat(4001) } });
+  ok(r.status === 400, '游客留言超长 400');
+
+  const gkey = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
+  r = await req('/api/feedback/open', { method: 'POST', body: { key: gkey, body: '游客第一条留言' } });
+  const guestFb = r.j.feedback && r.j.feedback.id;
+  ok(r.status === 200 && r.j.key === gkey && /^游客 #[0-9A-F]{4}$/.test(r.j.author_name || ''),
+    '游客留言成功：回 key 与「游客 #XXXX」', JSON.stringify(r.j).slice(0, 160));
+  ok((r.j.author_name || '').endsWith(gkey.slice(-4).toUpperCase()), '游客编号=key 末 4 位（不是数据库 id）');
+  r = await req('/api/feedback/open', { method: 'POST', body: { key: gkey, body: '游客第一条留言' } });
+  ok(r.status === 429, '同 key 10 秒内重复同一句 429');
+  r = await req('/api/feedback/open', { method: 'POST', body: { key: gkey, body: '游客第二条留言' } });
+  ok(r.status === 200, '同 key 追加不同内容成功');
+  r = await req('/api/feedback/open?key=' + gkey);
+  ok(r.status === 200 && r.j.items.length === 2 && r.j.author_name.endsWith(gkey.slice(-4).toUpperCase()), '游客凭 key 读到自己两条留言');
+  const otherKey = '0f1e2d3c4b5a69788796a5b4c3d2e1f0';
+  r = await req('/api/feedback/open?key=' + otherKey);
+  ok(r.status === 200 && r.j.items.length === 0, '换一个 key 读不到别人的线程');
+
+  r = await req('/api/feedback', { method: 'POST', token: u1, body: { body: '登录用户留言' } });
+  const userFb = r.j.feedback && r.j.feedback.id;
+  ok(r.status === 200 && r.j.author_name === '用户一', '登录用户留言：作者名=昵称');
+  r = await req('/api/feedback/mine', { token: u1 });
+  ok(r.status === 200 && r.j.items.some((x) => x.id === userFb), '/mine 能看到自己的留言');
+  r = await req('/api/feedback/mine', { token: u2 });
+  ok(r.status === 200 && !r.j.items.some((x) => x.id === userFb), '/mine 只看自己（u2 看不到 u1 的）');
+  r = await req('/api/feedback/' + userFb + '/reply', { method: 'PUT', token: u1, body: { reply: 'x' } });
+  ok(r.status === 403, '普通用户不能回复 403');
+  r = await req('/api/feedback/' + userFb, { method: 'DELETE', token: u1 });
+  ok(r.status === 403, '普通用户不能删留言 403');
+
+  r = await req('/api/feedback/admin', { token: admin });
+  ok(r.status === 200 && r.j.items.some((x) => x.id === guestFb) && r.j.items.some((x) => x.id === userFb),
+    '管理员看到游客与登录用户两类留言');
+  const replyText = '已收到，<b>会处理</b>；<script>alert(9)</script>';
+  r = await req('/api/feedback/' + guestFb + '/reply', { method: 'PUT', token: admin, body: { reply: replyText } });
+  ok(r.status === 200 && r.j.feedback.reply === replyText && !!r.j.feedback.replied_at, '管理员回复按原样文本落库（含 <b>/<script> 不吞）');
+  r = await req('/api/feedback/open?key=' + gkey);
+  ok(r.status === 200 && r.j.items.find((x) => x.id === guestFb).reply === replyText, '游客刷新能看到管理员回复原文');
+  r = await req('/api/feedback/' + userFb + '/reply', { method: 'PUT', token: admin, body: { reply: '登录用户的回复' } });
+  r = await req('/api/feedback/mine', { token: u1 });
+  ok(r.j.items.find((x) => x.id === userFb).reply === '登录用户的回复', '登录用户 /mine 看到回复');
+  r = await req('/api/feedback/' + guestFb, { method: 'DELETE', token: admin });
+  ok(r.status === 200 && r.j.deleted === true, '管理员删除留言');
+  r = await req('/api/feedback/open?key=' + gkey);
+  ok(r.status === 200 && !r.j.items.some((x) => x.id === guestFb), '删除后游客列表里消失');
+
   // 删除：照片一并清
   r = await req(`/api/journals/${jid}`, { method: 'DELETE', token: u1 });
   ok(r.status === 200, '删除游记');
   r = await req(`/api/journals/${jid}/photos/${pid1}/file?token=${encodeURIComponent(u1)}`);
   ok(r.status === 404, '删除后照片直链 404');
+  // v1.13.0：删原游记 → 社区分享自动撤下
+  r = await req('/api/community/feed/' + cjPost);
+  ok(r.status === 404, '删原游记 → 社区分享自动撤下（详情 404）');
+  r = await req('/api/community/feed');
+  ok(!r.j.posts.some((p) => p.id === cjPost), '删原游记后社区列表也没有它了');
+  // 删原攻略 → 同样撤下
+  r = await req(`/api/guides/${cgid}`, { method: 'DELETE', token: u1 });
+  ok(r.status === 200, '删除原攻略');
+  r = await req('/api/community/feed/' + cgPost2);
+  ok(r.status === 404, '删原攻略 → 社区分享自动撤下');
 
   // ---- v1.10.0：邀请码与自助注册 ----
   console.log('== 邀请码与注册（v1.10.0） ==');

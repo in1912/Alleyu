@@ -4,6 +4,8 @@
       <h2 style="margin: 0">📖 {{ j?.title || j?.destination || '游记' }}</h2>
       <div style="display: flex; gap: 8px; flex-wrap: wrap">
         <button v-if="status === 'done'" class="btn ghost sm" @click="startEdit">编辑</button>
+        <!-- v1.13.0 社区：发布的是数据库里已保存的那一版（编辑中不显示）；文案避开「分享」二字 -->
+        <button v-if="status === 'done' && !editing" class="btn ghost sm" :disabled="communityBusy" @click="toggleCommunity">{{ communityBusy ? '处理中…' : (communityPost ? '取消发布' : '发布到社区') }}</button>
         <button v-if="status === 'done'" class="btn ghost sm" @click="exportPng" :disabled="pngBusy">{{ pngBusy ? '渲染中…' : '导出PNG' }}</button>
         <button v-if="status === 'done'" class="btn ghost sm" :disabled="pdfBusy" @click="exportPdf('a4')">{{ pdfBusy ? '生成中…' : 'PDF·A4打印' }}</button>
         <button v-if="status === 'done'" class="btn ghost sm" :disabled="pdfBusy" @click="exportPdf('long')">PDF·长图分享</button>
@@ -314,10 +316,38 @@ async function load() {
     status.value = r.journal.status;
     photos.value = r.journal.photos || [];
     if (r.journal.status === 'done' && r.journal.content) streamed.value = r.journal.content;
-    if (r.journal.status === 'done') maybeRoute();
+    if (r.journal.status === 'done') { maybeRoute(); loadCommunity(); }
   } catch (e) {
     status.value = 'error';
     j.value = { error: e.message };
+  }
+}
+
+// ---- 社区发布（v1.13.0）：快照=当前已保存正文+照片；再点一次撤下 ----
+const communityPost = ref(null);
+const communityBusy = ref(false);
+async function loadCommunity() {
+  if (status.value !== 'done') { communityPost.value = null; return; }
+  try {
+    const r = await api('/community/by-source?kind=journal&source_id=' + encodeURIComponent(id));
+    communityPost.value = r.shared ? r.post : null;
+  } catch { communityPost.value = null; }
+}
+async function toggleCommunity() {
+  if (communityBusy.value) return;
+  communityBusy.value = true;
+  try {
+    if (communityPost.value) {
+      await api('/community/posts/' + communityPost.value.id, { method: 'DELETE' });
+      communityPost.value = null;
+    } else {
+      await api('/community/publish', { method: 'POST', body: { kind: 'journal', source_id: Number(id) } });
+      await loadCommunity();
+    }
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    communityBusy.value = false;
   }
 }
 

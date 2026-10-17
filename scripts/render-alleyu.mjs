@@ -82,6 +82,37 @@ function dropRenderAdmin() {
 let pass = 0, fail = 0;
 const ok = (c, n) => { if (c) { pass++; console.log('  ✅ ' + n); } else { fail++; console.log('  ❌ ' + n); } };
 
+// v1.13.0：社区/客服用到的 id，都在**回包里拿**，绝不认列表第一行。
+let communityGuidePostId = 0;
+let communityJournalPostId = 0;
+const renderFeedbackIds = new Set();
+// 中途失败（含断言抛错）也要把自检造的行清掉：攻略/游记、它们的社区分享、留言
+let renderCleaned = false;
+let cleanupJournalId = 0;
+let cleanupGuideId = 0;
+function dropRenderData() {
+  if (renderCleaned) return;
+  renderCleaned = true;
+  try {
+    const community = require(path.join(ROOT, 'server', 'services', 'communityService.js'));
+    if (cleanupJournalId) community.removePostsBySource('journal', cleanupJournalId);
+    if (cleanupGuideId) community.removePostsBySource('guide', cleanupGuideId);
+  } catch { /* 退出阶段别抛 */ }
+  try {
+    if (cleanupJournalId) {
+      fs.rmSync(path.join(ROOT, 'data', 'journal_photos', String(cleanupJournalId)), { recursive: true, force: true });
+      db.prepare('DELETE FROM journal_photos WHERE journal_id=?').run(cleanupJournalId);
+      db.prepare('DELETE FROM journals WHERE id=?').run(cleanupJournalId);
+    }
+    if (cleanupGuideId) {
+      db.prepare('DELETE FROM shares WHERE guide_id=?').run(cleanupGuideId);
+      db.prepare('DELETE FROM guides WHERE id=?').run(cleanupGuideId);
+    }
+    for (const id of renderFeedbackIds) db.prepare('DELETE FROM feedback WHERE id=?').run(id);
+  } catch { /* 尽力 */ }
+}
+process.on('exit', dropRenderData);
+
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 
@@ -209,6 +240,7 @@ const genRes = await fetch(URL_BASE + '/api/guides', {
 let done = null;
 let genbarOk = false, stageTextOk = false, peekOk = false;
 if (genRes && genRes.id) {
+  cleanupGuideId = genRes.id; // 收尾/崩溃时按这个 id 删，别靠列表顺序猜
   // v1.4.0：趁生成未完先进详情页——进度条 + 阶段说明词必须可见（桩+真高德 enrich 要半分钟，赶得上）
   await page.goto(URL_BASE + '/#/guide/' + genRes.id);
   try {
@@ -368,6 +400,17 @@ if (done && done.status === 'done') {
   const setAfter = await fetch(URL_BASE + '/api/settings', { headers: ahSet }).then((r) => r.json());
   ok((setAfter.public_base_url || '') === (setBefore.public_base_url || ''), `公开访问地址用后还原（原值「${setBefore.public_base_url || '空'}」，不给真实库留自检残留）`);
   await page.locator('.dlg button').filter({ hasText: '关闭' }).click();
+
+  // ---- v1.13.0：把这篇攻略发布到社区（之后游客要能在社区里看到它）----
+  const [gpResp] = await Promise.all([
+    page.waitForResponse((x) => /\/api\/community\/publish$/.test(x.url()) && x.request().method() === 'POST', { timeout: 10000 }),
+    page.locator('.gv-head button').filter({ hasText: '发布到社区' }).click(),
+  ]);
+  const gpJ = await gpResp.json().catch(() => ({}));
+  communityGuidePostId = (gpJ.post && gpJ.post.id) || 0;
+  ok(gpResp.ok() && communityGuidePostId > 0, `攻略页「发布到社区」成功（post #${communityGuidePostId}）`);
+  await page.waitForFunction(() => [...document.querySelectorAll('.gv-head button')].some((b) => b.textContent.includes('取消发布')), null, { timeout: 8000 });
+  ok(true, '发布后按钮变为「取消发布」（作者能自己撤下）');
 
   // 编辑模式：改 Markdown 原文并保存
   await page.locator('.gv-head button').filter({ hasText: '编辑' }).click();
@@ -748,6 +791,7 @@ await page.locator('.nav-row button').filter({ hasText: '下一问' }).click();
 await page.locator('.nav-row button').filter({ hasText: '生成游记' }).click();
 await page.waitForURL(/#\/journal\/\d+/, { timeout: 8000 });
 const jidCreated = Number(((page.url().match(/journal\/(\d+)/) || [])[1])); // 收尾按这个 id 删，别靠列表顺序猜
+cleanupJournalId = jidCreated;
 await page.waitForFunction(() => {
   const t = document.querySelector('.cvr-title');
   return t && t.textContent.trim().length > 0;
@@ -880,6 +924,17 @@ await page.waitForSelector('.jr-md', { timeout: 6000 });
 ok((await page.locator('.jr-md').innerText()).includes(jMarker), '取消编辑后正文即时更新');
 ok((await page.locator('.jr-md .rt-img').count()) >= 1, '只读态正文图片照常显示（不显示尺寸标注）');
 
+// ---- v1.13.0：把这篇游记发布到社区 ----
+const [jpResp] = await Promise.all([
+  page.waitForResponse((x) => /\/api\/community\/publish$/.test(x.url()) && x.request().method() === 'POST', { timeout: 10000 }),
+  page.locator('.jd-head button').filter({ hasText: '发布到社区' }).click(),
+]);
+const jpJ = await jpResp.json().catch(() => ({}));
+communityJournalPostId = (jpJ.post && jpJ.post.id) || 0;
+ok(jpResp.ok() && communityJournalPostId > 0, `游记页「发布到社区」成功（post #${communityJournalPostId}）`);
+await page.waitForFunction(() => [...document.querySelectorAll('.jd-head button')].some((b) => b.textContent.includes('取消发布')), null, { timeout: 8000 });
+ok(true, '游记发布后按钮变为「取消发布」');
+
 // 导出三件（此时正文是 HTML）：PNG（canvas）+ PDF A4 + PDF 长图
 const pngDlP = page.waitForEvent('download', { timeout: 20000 });
 await page.locator('.jd-head button').filter({ hasText: '导出PNG' }).click();
@@ -913,11 +968,7 @@ const jRow = page.locator('.gcard').filter({ hasText: jTitle });
 ok((await jRow.count()) >= 1, '游记列表出现刚生成的一篇（方框卡片）');
 ok((await page.locator('.gv-head button').filter({ hasText: '写游记（引导式）' }).count()) === 1, '卡片列表页仍有「＋ 写游记（引导式）」');
 await page.screenshot({ path: path.join(IMG_DIR, '游记-列表.png'), fullPage: false });
-if (jidCreated) {
-  const del = await fetch(URL_BASE + '/api/journals/' + jidCreated, { method: 'DELETE', headers: { Authorization: 'Bearer ' + tk } });
-  console.log(`  （清理 render 生成的游记 #${jidCreated}：HTTP ${del.status}）`);
-  if (!del.ok) console.log('  ⚠️ 没删掉，手工删 journals 里这一行 + data/journal_photos/' + jidCreated + '/');
-}
+// v1.13.0：这篇游记发布到了社区，游客测试还要用它 → 删除挪到脚本最后（连社区一起清）
 
 // ---- v1.10.0：邀请码 / 自助注册 / 生成配额 / 权限收口 ----
 // 这一组会在**真实 data/** 里造一个邀请码和一个用户，收尾必须删干净（见段末清理）。
@@ -1075,7 +1126,7 @@ await upage.waitForSelector('.m-nav a.m-item', { timeout: 8000 });
 ok(await upage.locator('.m-nav').isVisible(), '手机端（390 宽）底部浮栏可见');
 ok(!(await upage.locator('.side').isVisible().catch(() => false)), '手机端左侧栏隐藏');
 const mLabels = (await upage.locator('.m-nav a.m-item .mtxt').allInnerTexts()).map((t) => t.trim());
-ok(mLabels.length === 4 && mLabels.join('|') === '生成攻略|我的攻略|生成游记|我的', `手机底栏恰好四项：${mLabels.join(' / ')}`);
+ok(mLabels.length === 5 && mLabels.join('|') === '生成攻略|我的攻略|生成游记|社区|我的', `手机底栏恰好五项（v1.13.0 加「社区」）：${mLabels.join(' / ')}`);
 ok((await upage.locator('.m-nav .m-more').count()) === 0, '普通用户手机端没有「更多」（管理员才有）');
 const padB = await upage.locator('.main').evaluate((el) => parseFloat(getComputedStyle(el).paddingBottom) || 0);
 ok(padB >= 60, `页面底部为浮栏留了位置（padding-bottom ${padB}px）`);
@@ -1090,6 +1141,17 @@ await upage.waitForSelector('.acct-foot', { timeout: 8000 });
 ok((await upage.locator('h2').first().innerText()).includes('我的'), '手机端点「我的」→ 账号页（标题已改名）');
 await upage.screenshot({ path: path.join(IMG_DIR, 'mobile-我的游记.png'), fullPage: false });
 
+// v1.13.0：底栏第五项「社区」能到（手机一列）
+await upage.locator('.m-nav a.m-item[href="#/community"]').click();
+await upage.waitForURL('**/#/community', { timeout: 8000 });
+await upage.waitForSelector('.com-grid .com-card', { timeout: 8000 });
+const mVals = await upage.locator('.com-grid').evaluate((el) => getComputedStyle(el).gridTemplateColumns.trim().split(/\s+/));
+ok(mVals.length === 1, `手机端（390）社区卡片只有一列（grid 轨道数 ${mVals.length}）`);
+const mXs = new Set();
+for (const b of await upage.locator('.com-grid .com-card').evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().x)))) mXs.add(b);
+ok(mXs.size === 1, '手机端所有社区卡片左边对齐（同一列）');
+await upage.screenshot({ path: path.join(IMG_DIR, 'mobile-社区.png'), fullPage: false });
+
 // 管理员手机端：多一个「更多」，浮层里收着其余页签
 const mctx = await browser.newContext({ viewport: { width: 390, height: 844 }, storageState: await page.context().storageState() });
 const mpage = await mctx.newPage();
@@ -1101,7 +1163,7 @@ await mpage.waitForSelector('.m-sheet', { timeout: 6000 });
 const sheetTxt = (await mpage.locator('.m-sheet').innerText()).replace(/\s+/g, ' ');
 ok(/城市景点库/.test(sheetTxt) && /用户管理/.test(sheetTxt) && /设置/.test(sheetTxt) && /回首页/.test(sheetTxt) && /退出登录/.test(sheetTxt),
   `「更多」浮层含 城市景点库/用户管理/设置/回首页/退出登录（${sheetTxt.slice(0, 30)}）`);
-ok(!/生成攻略|我的攻略|生成游记/.test(sheetTxt), '「更多」浮层不重复底栏那四项');
+ok(!/生成攻略|我的攻略|生成游记|社区/.test(sheetTxt), '「更多」浮层不重复底栏那五项');
 await mpage.locator('.m-sheet .m-sheet-item').filter({ hasText: '设置' }).click();
 await mpage.waitForURL('**/#/settings', { timeout: 8000 });
 await mpage.waitForSelector('.tabs .t', { timeout: 8000 });
@@ -1109,16 +1171,81 @@ ok((await mpage.locator('.tabs .t').filter({ hasText: '维基与补全' }).count
 await mpage.screenshot({ path: path.join(IMG_DIR, 'mobile-设置.png'), fullPage: false });
 await mctx.close();
 
+// ---- v1.13.0：社区卡片（电脑多列）+ 客服悬浮按钮 + 留言闭环 ----
+console.log('== 社区多列 / 客服悬浮按钮 / 留言闭环（v1.13.0） ==');
+await page.setViewportSize({ width: 1280, height: 800 });
+await page.goto(URL_BASE + '/#/community');
+await page.waitForSelector('.com-grid .com-card', { timeout: 8000 });
+const dVals = await page.locator('.com-grid').evaluate((el) => getComputedStyle(el).gridTemplateColumns.trim().split(/\s+/));
+ok(dVals.length >= 2, `电脑端（1280）社区卡片多列（grid 轨道数 ${dVals.length}）`);
+// 卡片四要素：首图（或占位）、标题、用户名、分享日期 —— 只认我们刚发布的那两张
+for (const pid of [communityGuidePostId, communityJournalPostId]) {
+  const card = page.locator('.com-card[href="#/community/' + pid + '"]');
+  ok((await card.count()) === 1, `社区里能按 id 找到自己发布的卡片 #${pid}`);
+  if ((await card.count()) === 1) {
+    const txt = (await card.innerText()).replace(/\s+/g, ' ');
+    ok(/\d{4}-\d{2}-\d{2}/.test(txt), `卡片 #${pid} 有分享日期（${txt.slice(0, 40)}）`);
+    ok((await card.locator('.com-author').innerText()).trim().length > 0, `卡片 #${pid} 有用户名`);
+    ok((await card.locator('.com-cover img, .com-cover .ph').count()) === 1, `卡片 #${pid} 有首图或占位`);
+  }
+}
+await page.screenshot({ path: path.join(IMG_DIR, '社区.png'), fullPage: false });
+
+// FAB：桌面功能页可见 → 点击进留言页 → 留言页自身隐藏
+await page.goto(URL_BASE + '/#/history');
+await page.waitForSelector('.fab-feedback', { timeout: 8000 });
+ok(await page.locator('.fab-feedback').isVisible(), '电脑端功能页右下角有客服悬浮按钮');
+await page.locator('.fab-feedback').click();
+await page.waitForURL('**/#/feedback', { timeout: 8000 });
+await page.waitForSelector('.fb-form', { timeout: 8000 });
+ok((await page.locator('.fab-feedback').count()) === 0, '留言页本身不显示悬浮按钮（不挡内容）');
+
+// 普通用户手机端：FAB 抬到手机底栏之上，不重叠
+await upage.goto(URL_BASE + '/#/history');
+await upage.waitForSelector('.fab-feedback', { timeout: 8000 });
+await upage.waitForSelector('.m-nav', { timeout: 8000 });
+const fabBox = await upage.locator('.fab-feedback').boundingBox();
+const mnavBox = await upage.locator('.m-nav').boundingBox();
+ok(!!fabBox && !!mnavBox && fabBox.y + fabBox.height <= mnavBox.y + 1,
+  `手机端 FAB 在底栏之上不重叠（fab 底 ${Math.round((fabBox || {}).y + (fabBox || {}).height)} / 底栏顶 ${Math.round((mnavBox || {}).y)}）`);
+
+// 留言闭环：普通用户提交 → 回复框明说「管理员还没有回复」→ 管理员回复 → 用户刷新看到（字面 <b> 不当标签渲染）
+await upage.locator('.fab-feedback').click();
+await upage.waitForURL('**/#/feedback', { timeout: 8000 });
+await upage.waitForSelector('.fb-form', { timeout: 8000 });
+const fbIdTxt = (await upage.locator('.fb-identity').innerText()).replace(/\s+/g, ' ');
+ok(fbIdTxt.includes('自检改名' + rnd) && /\d{4}-\d{2}-\d{2}/.test(fbIdTxt), `留言页身份行有当前用户名与日期（${fbIdTxt}）`);
+const fbBody = 'render 自检留言 ' + rnd + '：请管理员回复';
+await upage.locator('#fb-body').fill(fbBody);
+const [fbResp] = await Promise.all([
+  upage.waitForResponse((x) => /\/api\/feedback$/.test(x.url()) && x.request().method() === 'POST', { timeout: 10000 }),
+  upage.locator('.fb-form button').click(),
+]);
+const fbJ = await fbResp.json().catch(() => ({}));
+const fbId = (fbJ.feedback && fbJ.feedback.id) || 0;
+if (fbId) renderFeedbackIds.add(fbId);
+ok(fbResp.ok() && fbId > 0, `普通用户提交留言成功（feedback #${fbId}）`);
+await upage.waitForFunction((id) => {
+  const el = document.querySelector('.fb-item[data-id="' + id + '"] .fb-reply-empty');
+  return el && el.textContent.includes('管理员还没有回复');
+}, fbId, { timeout: 8000 });
+ok(true, '管理员未回复时，只读回复框明确写「管理员还没有回复」');
+const fbReply = '已收到 <b>加急</b> ' + rnd;
+const putResp = await fetch(URL_BASE + '/api/feedback/' + fbId + '/reply', {
+  method: 'PUT', headers: ah, body: JSON.stringify({ reply: fbReply }),
+});
+ok(putResp.ok, `管理员回复成功（HTTP ${putResp.status}）`);
+await upage.reload();
+await upage.waitForSelector('.fb-item[data-id="' + fbId + '"] .fb-reply-text', { timeout: 8000 });
+const replyTxt = await upage.locator('.fb-item[data-id="' + fbId + '"] .fb-reply-text').innerText();
+ok(replyTxt.includes('<b>加急</b>'), `用户刷新后看到管理员回复原文（${replyTxt}）`);
+ok((await upage.locator('.fb-item[data-id="' + fbId + '"] .fb-reply b').count()) === 0, '回复里的 <b> 按纯文本显示，没有被当 HTML 渲染');
+await upage.screenshot({ path: path.join(IMG_DIR, '客服留言.png'), fullPage: false });
+
 await uctx.close();
 
 // 收尾：把 render 自己造的邀请码与用户从真实库里删掉（别留自检垃圾）
-// v1.10.2：攻略也一并删——以前只删游记，真实库里攒了 5 篇桩攻略（id 111~115：111~113 挂在管理员名下、
-//          114/115 的作者账号已删），用户看到列表里一堆「杭州 3 天」的假数据。
-if (genRes && genRes.id) {
-  const d = await fetch(URL_BASE + '/api/guides/' + genRes.id, { method: 'DELETE', headers: ah });
-  console.log(`  （清理 render 生成的攻略 #${genRes.id}：HTTP ${d.status}）`);
-  if (!d.ok) console.log(`  ⚠️ 没删掉，手工删 guides 里 id=${genRes.id} 这一行`);
-}
+// 攻略/游记（以及它们在社区里的帖子）要等游客/社区测试跑完再删 —— 见脚本最后。
 if (rInviteId) {
   const d = await fetch(URL_BASE + '/api/invites/' + rInviteId, { method: 'DELETE', headers: ah });
   console.log(`  （清理 render 生成的邀请码 ${inviteCode}：HTTP ${d.status}）`);
@@ -1143,6 +1270,54 @@ ok((await gpage.locator('.corner button').filter({ hasText: '登录' }).count())
 ok((await gpage.locator('.corner button').filter({ hasText: '注册' }).count()) === 1, '游客首页右上角「登录」旁有「注册」按钮');
 await gpage.screenshot({ path: path.join(IMG_DIR, '首页-游客.png'), fullPage: false });
 ok((await gpage.locator('.quick-links').count()) === 0, '游客不见快捷入口（登录后才有）');
+
+// ---- v1.13.0：游客进社区（免登录整页布局） ----
+ok(await gpage.locator('.guest-community').isVisible(), '游客首页有「逛逛社区（无需登录）」入口');
+await gpage.locator('.guest-community').click();
+await gpage.waitForURL('**/#/community', { timeout: 8000 });
+await gpage.waitForSelector('.com-grid .com-card', { timeout: 8000 });
+ok((await gpage.locator('.side').count()) === 0 && (await gpage.locator('.m-nav').count()) === 0, '游客的社区页是整页布局（没有侧栏/底栏）');
+ok((await gpage.locator('.com-guest-head').count()) === 1, '游客社区页自带品牌头与登录/注册入口');
+const gJCard = gpage.locator('.com-card[href="#/community/' + communityJournalPostId + '"]');
+ok((await gJCard.count()) === 1, `游客能看到刚发布的游记卡片 #${communityJournalPostId}`);
+await gJCard.click();
+await gpage.waitForURL('**/#/community/' + communityJournalPostId, { timeout: 8000 });
+await gpage.waitForSelector('.com-md', { timeout: 8000 });
+const gDetail = await gpage.locator('.com-md').innerText();
+ok(gDetail.includes(jMarker), '游客点开游记详情，正文含编辑标记（快照内容完整）');
+await gpage.waitForFunction(() => {
+  const imgs = [...document.querySelectorAll('.com-md img')];
+  return imgs.length > 0 && imgs.every((i) => i.complete && i.naturalWidth > 0);
+}, null, { timeout: 12000 });
+ok(true, '社区详情里的游记照片公开可看（naturalWidth > 0）');
+await gpage.screenshot({ path: path.join(IMG_DIR, '社区-详情.png'), fullPage: false });
+
+// ---- v1.13.0：游客留言（游客编号 + 管理员回复可见） ----
+await gpage.goto(URL_BASE + '/#/feedback');
+await gpage.waitForSelector('.fb-form', { timeout: 8000 });
+await gpage.waitForFunction(() => /游客 #[0-9A-F]{4}/.test(document.querySelector('.fb-identity')?.innerText || ''), null, { timeout: 8000 });
+const gIdent = (await gpage.locator('.fb-identity').innerText()).replace(/\s+/g, ' ');
+ok(/游客 #[0-9A-F]{4}/.test(gIdent) && /\d{4}-\d{2}-\d{2}/.test(gIdent), `游客留言页身份=游客编号 + 当前日期（${gIdent}）`);
+await gpage.locator('#fb-body').fill('游客留言 render ' + rnd);
+const [gFbResp] = await Promise.all([
+  gpage.waitForResponse((x) => /\/api\/feedback\/open$/.test(x.url()) && x.request().method() === 'POST', { timeout: 10000 }),
+  gpage.locator('.fb-form button').click(),
+]);
+const gFbJ = await gFbResp.json().catch(() => ({}));
+const gFbId = (gFbJ.feedback && gFbJ.feedback.id) || 0;
+if (gFbId) renderFeedbackIds.add(gFbId);
+ok(gFbResp.ok() && gFbId > 0, `游客提交留言成功（feedback #${gFbId}）`);
+const gFbReply = '游客的回复 render ' + rnd;
+const gPut = await fetch(URL_BASE + '/api/feedback/' + gFbId + '/reply', {
+  method: 'PUT', headers: ah, body: JSON.stringify({ reply: gFbReply }),
+});
+ok(gPut.ok, '管理员能回复游客留言');
+await gpage.reload();
+await gpage.waitForSelector('.fb-item[data-id="' + gFbId + '"] .fb-reply-text', { timeout: 8000 });
+ok((await gpage.locator('.fb-item[data-id="' + gFbId + '"] .fb-reply-text').innerText()).includes(gFbReply), '游客刷新后看到管理员回复（凭 localStorage 里的游客凭证）');
+
+await gpage.goto(URL_BASE + '/#/');
+await gpage.waitForSelector('.corner', { timeout: 8000 });
 await gpage.locator('.searchbar .journal-go').click();
 await gpage.waitForURL('**/#/login', { timeout: 6000 });
 ok(true, '游客点「写游记」→ 引导登录');
@@ -1167,6 +1342,36 @@ try {
 } catch { regFields = await gpage.locator('.dlg-card input').count(); }
 ok(regFields === 5, `登录页「注册」跳进注册页（五项表单就位，实际 ${regFields}）`);
 await guest.close();
+
+// ---- v1.13.0 收尾：删来源（社区帖子应自动撤下）→ 删自检留言 → 标记已清理 ----
+console.log('== 收尾：删除自检数据（社区分享随来源一起撤下） ==');
+let cleanOk = true;
+if (jidCreated) {
+  const d = await fetch(URL_BASE + '/api/journals/' + jidCreated, { method: 'DELETE', headers: ah });
+  console.log(`  （清理 render 生成的游记 #${jidCreated}：HTTP ${d.status}）`);
+  cleanOk = cleanOk && d.ok;
+}
+if (genRes && genRes.id) {
+  const d = await fetch(URL_BASE + '/api/guides/' + genRes.id, { method: 'DELETE', headers: ah });
+  console.log(`  （清理 render 生成的攻略 #${genRes.id}：HTTP ${d.status}）`);
+  cleanOk = cleanOk && d.ok;
+}
+// 删来源后，社区里对应的分享必须自动消失（详情 404 + feed 里没有这个 id）
+const feedNow = await fetch(URL_BASE + '/api/community/feed').then((x) => x.json()).catch(() => ({ posts: [] }));
+const feedIds = (feedNow.posts || []).map((p) => p.id);
+for (const pid of [communityJournalPostId, communityGuidePostId]) {
+  if (!pid) continue;
+  const det = await fetch(URL_BASE + '/api/community/feed/' + pid);
+  ok(det.status === 404 && !feedIds.includes(pid), `删掉原文章后社区分享 #${pid} 自动撤下（详情 404、feed 里没有）`);
+  cleanOk = cleanOk && det.status === 404;
+}
+for (const id of renderFeedbackIds) {
+  const d = await fetch(URL_BASE + '/api/feedback/' + id, { method: 'DELETE', headers: ah });
+  if (!d.ok) cleanOk = false;
+}
+console.log(`  （清理 render 自检留言 ${renderFeedbackIds.size} 条）`);
+if (!cleanOk) console.log('  ⚠️ 有自检数据没删干净，退出钩子会再试一次（community/feedback/journals/guides 直连库删）');
+renderCleaned = cleanOk;
 
 await browser.close();
 if (server) server.kill();

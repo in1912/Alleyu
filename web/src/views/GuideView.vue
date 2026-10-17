@@ -6,6 +6,8 @@
         <button v-if="streamed && !editing" class="btn ghost sm" @click="copy">复制全文</button>
         <button v-if="status === 'done' && !editing" class="btn ghost sm" :disabled="pdfBusy" @click="exportPdf">{{ pdfBusy ? '生成中…' : '导出PDF' }}</button>
         <button v-if="status === 'done' && !editing" class="btn ghost sm" @click="openShare">分享</button>
+        <!-- v1.13.0 社区：直接公开（用户拍板），管理员可删；文案避开「分享」二字，别撞 render 的严格 locator -->
+        <button v-if="status === 'done' && !editing" class="btn ghost sm" :disabled="communityBusy" @click="toggleCommunity">{{ communityBusy ? '处理中…' : (communityPost ? '取消发布' : '发布到社区') }}</button>
         <button v-if="status === 'done' && !editing" class="btn ghost sm" @click="startEdit">编辑</button>
         <button v-if="status === 'error' || status === 'done'" class="btn ghost sm" @click="regen">重新生成</button>
         <a href="#/history" class="btn ghost sm">返回列表</a>
@@ -181,6 +183,7 @@ async function loadGuide() {
     } else if (j.guide.content && j.guide.content.length > streamed.value.length) {
       streamed.value = j.guide.content;
     }
+    if (j.guide.status === 'done') loadCommunity();
   } catch (e) {
     status.value = 'error';
     guide.value = { error: e.message, title: '' };
@@ -265,6 +268,34 @@ async function saveEdit() {
     editing.value = false;
     alert('已保存');
   } catch (e) { alert(e.message); }
+}
+
+// ---- 社区发布（v1.13.0）：发布=当前已保存正文的快照；再点一次撤下 ----
+const communityPost = ref(null);
+const communityBusy = ref(false);
+async function loadCommunity() {
+  if (!token() || status.value !== 'done') { communityPost.value = null; return; }
+  try {
+    const j = await api('/community/by-source?kind=guide&source_id=' + encodeURIComponent(id));
+    communityPost.value = j.shared ? j.post : null;
+  } catch { communityPost.value = null; }
+}
+async function toggleCommunity() {
+  if (communityBusy.value) return;
+  communityBusy.value = true;
+  try {
+    if (communityPost.value) {
+      await api('/community/posts/' + communityPost.value.id, { method: 'DELETE' });
+      communityPost.value = null;
+    } else {
+      await api('/community/publish', { method: 'POST', body: { kind: 'guide', source_id: Number(id) } });
+      await loadCommunity();
+    }
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    communityBusy.value = false;
+  }
 }
 
 // ---- 分享（v1.6.0）：dynamic=跟随原文 / static=快照 ----

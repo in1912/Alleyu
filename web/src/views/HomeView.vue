@@ -51,6 +51,8 @@
       <p v-else class="hint" style="margin-top: 26px">
         游客可以看首页；<a href="#/login" style="color: var(--acc-d)">登录</a> 后可以生成 AI 攻略、写游记、看地图与天气。
       </p>
+      <!-- v1.13.0：游客也能逛社区。必须放在 .quick-links 外面——render 断言游客的 .quick-links 为 0 -->
+      <a class="guest-community" href="#/community">🌐 逛逛社区（无需登录）</a>
     </div>
 
     <!-- v1.10.1：底部 ICP 备案号（页面是浅灰绿底，用 --mut 灰绿小字；纯白在这个底色上看不见） -->
@@ -78,6 +80,7 @@ const LINKS = [
   { href: '#/plan', label: '🧭 生成攻略', page: 'guides' },
   { href: '#/history', label: '📚 我的攻略', page: 'guides' },
   { href: '#/journals', label: '📖 生成游记', page: 'guides' },
+  { href: '#/community', label: '🌐 社区', always: true }, // v1.13.0
   { href: '#/library', label: '🗺️ 城市景点库', page: 'library', adminOnly: true },
   { href: '#/weather', label: '🌤️ 天气', page: 'weather' },
   { href: '#/account', label: '👤 我的', always: true },
@@ -149,6 +152,9 @@ onMounted(async () => {
 .quick-links { margin-top: 30px; display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; font-size: 14px; }
 .quick-links a { color: var(--mut); }
 .quick-links a:hover { color: var(--acc-d); }
+/* v1.13.0 游客社区入口：单独一块，不混进 .quick-links（那是登录用户的快捷入口） */
+.guest-community { display: inline-block; margin-top: 16px; padding: 9px 20px; border: 1px solid var(--acc-d); border-radius: 999px; color: var(--acc-d); font-size: 14px; background: var(--card); }
+.guest-community:hover { background: var(--acc); color: #fff; border-color: var(--acc); }
 .corner { position: absolute; top: 16px; right: 18px; display: flex; gap: 10px; align-items: center; z-index: 30; }
 .corner .who { font-size: 13px; color: var(--mut); }
 /* .go 基础样式是绝对定位 right:6px——第二个按钮必须错开，否则叠在「做攻略」上（render 抓出的真 bug） */

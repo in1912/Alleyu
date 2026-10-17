@@ -204,6 +204,45 @@ CREATE TABLE IF NOT EXISTS upgrade_logs (
   sha256 TEXT NOT NULL DEFAULT '',
   note TEXT NOT NULL DEFAULT ''
 );
+
+-- v1.13.0 社区：用户把攻略/游记发布成公开快照。正文入库前先归一化成 Markdown 再重建 HTML
+-- （公开页面，必须比私有游记的黑名单净化更严）。游记照片只存快照文件名，封面复制到
+-- data/community/<post_id>/cover.<ext>；原文章删除时由路由级联手删这一行。
+CREATE TABLE IF NOT EXISTS community_posts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  source_id INTEGER NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  author_name TEXT NOT NULL DEFAULT '',
+  cover_url TEXT NOT NULL DEFAULT '',
+  cover_file TEXT NOT NULL DEFAULT '',
+  content_html TEXT NOT NULL DEFAULT '',
+  photos_json TEXT NOT NULL DEFAULT '[]',
+  published_at TEXT DEFAULT (datetime('now','localtime')),
+  updated_at TEXT DEFAULT (datetime('now','localtime')),
+  UNIQUE(kind, source_id)
+);
+CREATE INDEX IF NOT EXISTS idx_community_feed ON community_posts(id DESC);
+CREATE INDEX IF NOT EXISTS idx_community_user ON community_posts(user_id, id DESC);
+
+-- v1.13.0 客服留言：登录用户按 user_id 归属；游客用 32 位 guest_key（浏览器 localStorage 里的凭证）。
+-- body/reply 一律当纯文本存，前端只做插值，绝不 v-html。
+CREATE TABLE IF NOT EXISTS feedback (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL DEFAULT 0,
+  guest_key TEXT NOT NULL DEFAULT '',
+  author_name TEXT NOT NULL DEFAULT '',
+  body TEXT NOT NULL DEFAULT '',
+  reply TEXT NOT NULL DEFAULT '',
+  replied_at TEXT,
+  replied_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  updated_at TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_guest ON feedback(guest_key, id DESC);
+CREATE INDEX IF NOT EXISTS idx_feedback_user ON feedback(user_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(id DESC);
 `;
 db.exec(DDL);
 

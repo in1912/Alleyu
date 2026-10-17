@@ -18,7 +18,9 @@ app.use(express.json({ limit: '12mb' }));
 // 那些 handler 直接用 req.user（EXEMPT 分支没赋值）→ 500 或静默越权。
 // 'auth/register-open' 也要单独写：前缀匹配只认 `pre` 本身和 `pre + '/'`，
 // 所以 'auth/register' **不会**顺带放行 register-open（自检抓到的真 bug：注册页拿不到 open 状态，恒 401）。
-const EXEMPT = ['auth/login', 'auth/register', 'auth/register-open', 'health', 'system-info', 'amap/mapimg', 'amap/photo', 'share'];
+// v1.13.0：社区公开读（community/feed）与游客客服（feedback/open）也必须免登录。
+// 只写这两个**全路径**前缀，绝不写 'community'/'feedback'——写宽了会把发布/删除/管理员回复一起放行。
+const EXEMPT = ['auth/login', 'auth/register', 'auth/register-open', 'health', 'system-info', 'amap/mapimg', 'amap/photo', 'share', 'community/feed', 'feedback/open'];
 
 // /api/system-info 挂在根上（免登录的版本探针）
 app.get('/api/system-info', require('./routes/settingsRoutes').systemInfo);
@@ -45,6 +47,8 @@ app.use('/api/ai', require('./routes/aiRoutes'));
 app.use('/api', require('./routes/cityRoutes'));      // /api/cities /api/attractions /api/poi /api/import-poi
 app.use('/api/guides', require('./routes/guideRoutes'));
 app.use('/api/journals', require('./routes/journalRoutes')); // v1.8.0 游记整理
+app.use('/api/community', require('./routes/communityRoutes')); // v1.13.0 社区（公开读在 /feed，其余需登录）
+app.use('/api/feedback', require('./routes/feedbackRoutes')); // v1.13.0 客服留言（游客入口在 /open）
 app.use('/api/share', require('./routes/shareRoutes')); // 公开分享读（EXEMPT：token 即凭证）
 app.use('/api/amap', require('./routes/amapRoutes'));
 app.use('/api/weather', require('./routes/weatherRoutes'));

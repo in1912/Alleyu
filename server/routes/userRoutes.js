@@ -7,6 +7,7 @@ const express = require('express');
 const { db } = require('../db');
 const { hashPassword, PAGES } = require('../auth');
 const { quotaState } = require('../quota');
+const community = require('../services/communityService');
 
 const r = express.Router();
 
@@ -110,6 +111,9 @@ r.delete('/:id', (req, res) => {
   if (u.role === 'admin' && db.prepare("SELECT COUNT(*) c FROM users WHERE role='admin'").get().c <= 1) {
     return res.status(400).json({ error: '至少保留一名管理员' });
   }
+  // v1.13.0：社区分享、客服留言随用户一起删（先撤社区，再删照片目录）
+  try { community.removePostsByUser(id); } catch { /* 尽力 */ }
+  db.prepare('DELETE FROM feedback WHERE user_id=?').run(id);
   // 游记（v1.8.0）此前没跟着删：行留着、data/journal_photos/<id>/ 的照片也留在盘上 —— 一并清掉
   for (const j of db.prepare('SELECT id FROM journals WHERE user_id=?').all(id)) {
     db.prepare('DELETE FROM journal_photos WHERE journal_id=?').run(j.id);

@@ -707,7 +707,12 @@ onBeforeUnmount(() => {
 .rtb { border: 1px solid transparent; background: none; color: var(--text); font-size: 12.5px; padding: 4px 9px; border-radius: 7px; cursor: pointer; line-height: 1.4; }
 .rtb:hover { background: var(--card); border-color: var(--line); }
 .rt-sep { width: 1px; height: 16px; background: var(--line); margin: 0 3px; }
-.rt-editor { min-height: 420px; box-sizing: border-box; padding: 14px 16px; border: 1px solid var(--line); border-radius: 0 0 10px 10px; background: var(--card); font-size: 14px; line-height: 1.85; outline: none; overflow-wrap: break-word; }
+/* 编辑区高度不再随正文无限拉长：内容超出就在框内滚动，工具栏始终留在视野上方 */
+.rt-editor { min-height: 320px; max-height: 62vh; overflow-y: auto; overscroll-behavior: contain; box-sizing: border-box; padding: 14px 16px; border: 1px solid var(--line); border-radius: 0 0 10px 10px; background: var(--card); font-size: 14px; line-height: 1.85; outline: none; overflow-wrap: break-word; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.rt-editor::-webkit-scrollbar { width: 10px; }
+.rt-editor::-webkit-scrollbar-track { background: transparent; }
+.rt-editor::-webkit-scrollbar-thumb { background: var(--line); border-radius: 6px; border: 2px solid var(--card); }
+.rt-editor::-webkit-scrollbar-thumb:hover { background: var(--mut); }
 .rt-editor:focus { border-color: var(--acc-d); }
 .rt-editor :deep(h2) { font-size: 20px; margin: 14px 0 8px; border-bottom: 1px solid var(--line); padding-bottom: 5px; }
 .rt-editor :deep(h3) { font-size: 16.5px; margin: 12px 0 6px; }

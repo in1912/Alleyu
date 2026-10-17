@@ -804,6 +804,18 @@ const cap0 = (await page.locator('.rt-editor .rt-cap').first().innerText()).trim
 ok(/1×1/.test(cap0) && /(KB|B)/.test(cap0), `图片下方标注像素尺寸与体积（${cap0}）`);
 ok((await page.locator('.rt-tools .rtb').count()) >= 6, '富文本工具栏（H2/H3/加粗/斜体/列表/引用/插图/撤销）');
 
+// v1.12.1：用户点名「游记修改的富文本框内的编辑内容要有滚动条」——超长正文不许把编辑框撑到无限高
+const scrollProbe = await page.locator('.rt-editor').evaluate((el) => {
+  const before = el.innerHTML;
+  el.innerHTML = before + new Array(60).fill('<p>滚动测试行 滚动测试行 滚动测试行</p>').join('');
+  const over = el.scrollHeight > el.clientHeight + 4;
+  const st = getComputedStyle(el);
+  el.innerHTML = before; // 不派发 input，不触发自动保存
+  return { over, oy: st.overflowY, mh: st.maxHeight };
+});
+ok(scrollProbe.oy === 'auto' && scrollProbe.mh !== 'none', `编辑区有高度上限并按需滚动（overflow-y:${scrollProbe.oy}，max-height:${scrollProbe.mh}）`);
+ok(scrollProbe.over, '正文超出上限时编辑框内出现滚动条（scrollHeight > clientHeight）');
+
 const jMarker = '游记编辑标记RenderE2E';
 await page.locator('.rt-editor').evaluate((el, m) => {
   el.focus();

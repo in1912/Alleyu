@@ -1,29 +1,28 @@
 <template>
   <div>
-    <h2 style="margin: 0 0 14px">📖 游记整理</h2>
-    <div class="card">
-      <div style="display: flex; gap: 10px; margin-bottom: 14px; align-items: center">
-        <button class="btn sm" @click="openNew">＋ 写游记（引导式）</button>
-        <span class="hint">问答式录入 → 照片与体验 → AI 成文 → 封面标题 → 导出 PNG/PDF</span>
+    <div class="gv-head">
+      <h2 style="margin: 0">📖 生成游记</h2>
+      <button class="btn sm" @click="openNew">＋ 写游记（引导式）</button>
+    </div>
+    <!-- v1.12.0：列表改成与「我的攻略」一致方框卡片（用户点名不要表格） -->
+    <div v-if="!rows.length && !loading" class="card empty">还没有游记。点「写游记」，从第一个问题开始。</div>
+    <div v-else-if="rows.length" class="grid3">
+      <div v-for="j in rows" :key="j.id" class="card gcard" @click="open(j)">
+        <div class="gc-top">
+          <b class="gc-title">{{ j.title || '（未起标题）' }}</b>
+          <span class="badge" :class="{ gray: j.status !== 'done' }">{{ statusText(j.status) }}</span>
+        </div>
+        <p class="hint" style="margin: 8px 0 4px">
+          {{ j.destination || '-' }}
+          <template v-if="j.meta.days"> · {{ j.meta.days }} 天</template>
+          <template v-if="j.meta.season"> · {{ j.meta.season }}</template>
+        </p>
+        <p class="hint" style="margin: 0">{{ j.updated_at }}</p>
+        <div class="gc-acts">
+          <span class="hint">点卡片查看</span>
+          <button class="btn ghost sm" @click.stop="del(j)">删</button>
+        </div>
       </div>
-      <div v-if="!rows.length && !loading" class="empty">还没有游记。点「写游记」，从第一个问题开始。</div>
-      <table v-else class="tb">
-        <thead><tr><th>标题</th><th>目的地</th><th>天数</th><th>季节</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead>
-        <tbody>
-          <tr v-for="j in rows" :key="j.id">
-            <td><a @click="open(j)" style="cursor: pointer; font-weight: 600">{{ j.title || '（未起标题）' }}</a></td>
-            <td>{{ j.destination || '-' }}</td>
-            <td>{{ j.meta.days || '-' }}</td>
-            <td>{{ j.meta.season || '-' }}</td>
-            <td><span class="badge" :class="{ gray: j.status !== 'done' }">{{ statusText(j.status) }}</span></td>
-            <td class="hint">{{ j.updated_at }}</td>
-            <td>
-              <button class="btn ghost sm" @click="open(j)">查看</button>
-              <button class="btn ghost sm" style="margin-left: 6px" @click="del(j)">删</button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
     </div>
   </div>
 </template>
@@ -60,3 +59,12 @@ async function del(j) {
 }
 onMounted(load);
 </script>
+
+<style scoped>
+.gv-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.gcard { cursor: pointer; transition: transform 0.12s; }
+.gcard:hover { transform: translateY(-2px); }
+.gc-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.gc-title { font-size: 16px; color: var(--acc-d); line-height: 1.4; }
+.gc-acts { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
+</style>

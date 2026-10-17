@@ -1,7 +1,12 @@
 // 游记 PNG 长图导出（v1.8.0）：纯浏览器 canvas 渲染，零服务端依赖。
 // 配色用 journalPalettes.js（与 PDF 服务端 PALETTES 同值）；photo:N 占位换真图 URL 由调用方传入。
 // 两遍渲染：先量高（文字换行 + 图片按宽定高），再整图绘制。
+import { isHtml, htmlToMd } from './htmlMd.js';
+
 export async function renderJournalPng({ title, subtitle, markdown, palette, coverUrl, photoUrls }) {
+  // v1.12.0：正文可能已被富文本编辑器存成 HTML。这里的解析器只认 Markdown，先转回来。
+  // htmlToMd 会把每张图单独成行（`![alt](photo:N)`），正好满足下面「整行图片」的约定。
+  if (isHtml(markdown)) markdown = htmlToMd(markdown);
   const W = 750; // 适合手机端浏览分享的宽度
   const PAD = 34;
   const MAX_H = 32000; // canvas 单边安全上限（32767）留余量

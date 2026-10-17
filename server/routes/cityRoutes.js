@@ -6,6 +6,7 @@ const express = require('express');
 const { db, seedCityStats, seedLines, pullSeedCities } = require('../db');
 const amap = require('../services/amapService');
 const wiki = require('../services/wikiService');
+const { enabledKinds } = require('../services/wikiSettings');
 const { runIntroBackfill } = require('../services/introBackfill');
 
 const r = express.Router();
@@ -203,9 +204,16 @@ function upsertPoi(cityId, p) {
   return 'insert';
 }
 
-// 站点名串（错误文案里点名是哪些站点连不上，别让用户以为「维基」是个抽象概念）
+// v1.12.0：维基两家站点在设置页各有一个开关，**未勾选的站点一个请求都不发**。
+// 这里只在路由层读设置（wikiService 保持零 db 依赖），文案只点名「已开启」的站点，
+// 别让用户以为「维基」是个抽象概念、也别把没启用的站点说成「连不上」。
+function enabledWikiSites() {
+  const kinds = enabledKinds();
+  return (wiki.SITES || []).filter((s, i) => kinds.includes(wiki.siteKind(s, i)));
+}
 function wikiSiteNames() {
-  return (wiki.SITES || []).map((s) => s.label).join(' / ');
+  const list = enabledWikiSites();
+  return list.length ? list.map((s) => s.label).join(' / ') : '维基';
 }
 
 // 单个景点补介绍（维基旅行→维基百科）。v1.11.1 起三种结局说三句不同的话：
@@ -216,9 +224,15 @@ r.post('/attractions/:id/enrich-intro', async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: '仅管理员' });
   const a = db.prepare('SELECT * FROM attractions WHERE id=?').get(Number(req.params.id));
   if (!a) return res.status(404).json({ error: '景点不存在' });
+  // v1.12.0：两家都没勾 → 在碰网络之前就说清楚「未开启」。
+  // 这不是「连不上」，也不是「没条目」——是管理员没启用，三件事不能混成一句。
+  const kinds = enabledKinds();
+  if (!kinds.length) {
+    return res.status(409).json({ error: '维基介绍未开启（设置 → 维基与补全）', code: 'WIKI_DISABLED' });
+  }
   let got;
   try {
-    got = await wiki.fetchIntroEx(a.name);
+    got = await wiki.fetchIntroEx(a.name, { sites: kinds });
   } catch (e) {
     return res.status(502).json({ error: '介绍抓取失败：' + e.message });
   }
@@ -239,7 +253,17 @@ r.post('/attractions/:id/enrich-intro', async (req, res) => {
 // 只读连通探针（admin）：分清「维基连不上」和「这条景点真没条目」。**不写库**。
 r.get('/wiki/probe', async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: '维基连通探测仅管理员' });
-  res.json(await wiki.probeSites(String((req.query || {}).q || '故宫博物院')));
+  const q = req.query || {};
+  // v1.12.0：?site=voyage|pedia 只测一家——设置页的「测试连接」要在**勾选之前**就能测。
+  // 因此这里刻意不读开关：开关管的是「日常抓取要不要发请求」，探针管的是「这家连不连得上」。
+  let opts;
+  if (q.site !== undefined && q.site !== '') {
+    const s = String(q.site);
+    const idx = wiki.SITES.findIndex((x, i) => wiki.siteKind(x, i) === s);
+    if (idx < 0) return res.status(400).json({ error: 'site 只认 voyage / pedia' });
+    opts = { sites: [s] };
+  }
+  res.json(await wiki.probeSites(String(q.q || '故宫博物院'), opts));
 });
 
 // 城市一键补全（admin）：国内=高德「风景名胜」分类检索导入（两页共 50 条，去重留新）+
@@ -256,11 +280,14 @@ r.post('/cities/:id/backfill', async (req, res) => {
   if (!c) return res.status(404).json({ error: '城市不存在' });
   const skipIntro = !!(req.body || {}).skip_intro;
   const onlyIntro = !!(req.body || {}).only_intro;
+  const wikiKinds = enabledKinds();
+  const wikiDisabled = wikiKinds.length === 0;
   const t0 = Date.now();
   const out = {
     city: c.name, line: c.line || '国内', imported: 0, skipped: 0,
     intro_ok: 0, intro_miss: 0, intro_tried: 0, intro_error: '', intro_left: 0,
-    wiki_unreachable: false, intro_budget_out: false, skip_intro: skipIntro, only_intro: onlyIntro, elapsed_ms: 0,
+    wiki_unreachable: false, intro_budget_out: false, wiki_disabled: false,
+    skip_intro: skipIntro, only_intro: onlyIntro, elapsed_ms: 0,
   };
   const addErr = (m) => { out.intro_error = out.intro_error ? out.intro_error + '；' + m : m; };
 
@@ -280,13 +307,18 @@ r.post('/cities/:id/backfill', async (req, res) => {
     }
   }
 
-  // ② 维基介绍：该城市缺介绍的景点（上限 40 条/次），预算内能补几条补几条
-  if (!skipIntro) {
+  // ② 维基介绍：该城市缺介绍的景点（上限 40 条/次），预算内能补几条补几条。
+  //    v1.12.0：两家站点都没勾 → 介绍段整段跳过（高德导入照跑），如实回 wiki_disabled，
+  //    不能说成「连不上」，更不能让用户以为介绍已经补过了。
+  if (!skipIntro && wikiDisabled) {
+    out.wiki_disabled = true;
+    addErr('维基介绍未开启（设置 → 维基与补全），本次只导入了景点');
+  } else if (!skipIntro) {
     try {
       const need = db.prepare("SELECT id,name FROM attractions WHERE city_id=? AND intro='' ORDER BY must DESC, id LIMIT 40").all(c.id);
       const sum = await runIntroBackfill({
         need,
-        fetch: (name) => wiki.fetchIntroEx(name),
+        fetch: (name) => wiki.fetchIntroEx(name, { sites: wikiKinds }),
         budgetMs: Number(process.env.ALLEYU_INTRO_BUDGET_MS) || 20000,
         onHit: (row, hit) => db.prepare('UPDATE attractions SET intro=?, intro_source=?, intro_url=? WHERE id=?')
           .run(hit.text, hit.source, hit.url, row.id),

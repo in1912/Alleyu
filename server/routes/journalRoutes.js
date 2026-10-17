@@ -9,6 +9,11 @@ const crypto = require('node:crypto');
 const { db } = require('../db');
 const js = require('../services/journalService');
 const { checkQuota } = require('../quota');
+const { imageMeta, isWebp } = require('../services/imageSize');
+const { isHtml } = require('../services/htmlMd');
+const { sanitizeJournalHtml } = require('../services/htmlSanitize');
+
+const CONTENT_MAX = 400000; // 正文上限（v1.12.0 从 200000 提到 400000：HTML 标签占体积）
 
 const r = express.Router();
 const PHOTO_DIR = path.join(process.env.DATA_DIR || path.join(__dirname, '..', '..', 'data'), 'journal_photos');
@@ -22,7 +27,7 @@ function photoOf(journalId, pid) {
 }
 function rowJson(j) {
   if (!j) return null;
-  const photos = db.prepare('SELECT id, spot, caption, caption_by, sort, created_at FROM journal_photos WHERE journal_id=? ORDER BY sort, id').all(j.id);
+  const photos = db.prepare('SELECT id, spot, caption, caption_by, sort, width, height, bytes, created_at FROM journal_photos WHERE journal_id=? ORDER BY sort, id').all(j.id);
   // v1.9.0 三套文本：原版/手动版正文不回传给前端（长度可能几十 KB），只给「有没有 + 多少字」，
   // 要恢复走 /content/restore，恢复后的正文由那个接口回。route 是路线图缓存（可能为 null）。
   const out = { ...j, meta: JSON.parse(j.meta_json || '{}'), spots: JSON.parse(j.spots_json || '[]'), photos };
@@ -34,6 +39,13 @@ function rowJson(j) {
   delete out.content_original;
   delete out.content_manual;
   return out;
+}
+// 正文写库前的统一入口（v1.12.0）：HTML 才净化，Markdown 原样保存——
+// 对 Markdown 跑 HTML 净化会把正文里合法的 `<` 字符弄坏，也会误伤 AI 原文。
+function cleanContent(raw) {
+  let text = String(raw === undefined || raw === null ? '' : raw);
+  if (isHtml(text)) text = sanitizeJournalHtml(text);
+  return text.slice(0, CONTENT_MAX);
 }
 function touch(id) {
   db.prepare("UPDATE journals SET updated_at=datetime('now','localtime') WHERE id=?").run(id);
@@ -67,9 +79,26 @@ r.post('/', (req, res) => {
   res.json({ journal: rowJson(db.prepare('SELECT * FROM journals WHERE id=?').get(info.lastInsertRowid)) });
 });
 
+// v1.12.0：历史照片没有尺寸（加列前上传的）。只在**打开这一篇**时逐张补算一次，
+// 不放进 rowJson、更不扫全库——列表页也会调 rowJson，那里不需要尺寸。
+function backfillPhotoMeta(journalId) {
+  const rows = db.prepare('SELECT id, filename FROM journal_photos WHERE journal_id=? AND (width=0 OR height=0 OR bytes=0)').all(journalId);
+  for (const row of rows) {
+    try {
+      const f = path.join(PHOTO_DIR, String(journalId), row.filename);
+      if (!fs.existsSync(f)) continue;
+      const buf = fs.readFileSync(f);
+      const meta = imageMeta(buf);
+      if (!meta) continue;
+      db.prepare('UPDATE journal_photos SET width=?, height=?, bytes=? WHERE id=?').run(meta.width, meta.height, buf.length, row.id);
+    } catch { /* 单张读不了就继续，界面显示「尺寸未知」 */ }
+  }
+}
+
 r.get('/:id', (req, res) => {
   const j = myJournal(req, req.params.id);
   if (!j) return res.status(404).json({ error: '游记不存在' });
+  backfillPhotoMeta(j.id);
   res.json({ journal: rowJson(j) });
 });
 
@@ -81,7 +110,7 @@ r.put('/:id', (req, res) => {
   const b = req.body || {};
   const meta = b.meta !== undefined ? sanitizeMeta(b.meta) : JSON.parse(j.meta_json || '{}');
   const spots = b.spots !== undefined ? sanitizeSpots(b.spots) : JSON.parse(j.spots_json || '[]');
-  const doneGuard = j.status === 'done' && b.content !== undefined && !String(b.content).trim() ? j.content : (b.content !== undefined ? String(b.content).slice(0, 200000) : j.content);
+  const doneGuard = j.status === 'done' && b.content !== undefined && !String(b.content).trim() ? j.content : (b.content !== undefined ? cleanContent(b.content) : j.content);
   db.prepare(`UPDATE journals SET city_id=?, destination=?, meta_json=?, spots_json=?, content=?, title=?, palette=?, updated_at=datetime('now','localtime') WHERE id=?`)
     .run(b.city_id !== undefined ? (b.city_id ? Number(b.city_id) : null) : j.city_id,
       b.destination !== undefined ? String(b.destination).slice(0, 50) : j.destination,
@@ -117,15 +146,19 @@ r.post('/:id/photos', photoJson, (req, res) => {
   if (buf.length > MAX_PHOTO_BYTES) return res.status(400).json({ error: `图片太大（${(buf.length / 1048576).toFixed(1)}MB > 8MB 上限）` });
   if (ext === 'png' && !(buf[0] === 0x89 && buf[1] === 0x50)) return res.status(400).json({ error: '不是有效的 PNG 数据' });
   if (ext === 'jpg' && !(buf[0] === 0xff && buf[1] === 0xd8)) return res.status(400).json({ error: '不是有效的 JPEG 数据' });
+  // v1.12.0：WEBP 以前没校验 magic（只看 dataURL 前缀），这里补上；尺寸读不出来也拒收（多半是坏文件）
+  if (ext === 'webp' && !isWebp(buf)) return res.status(400).json({ error: '不是有效的 WEBP 数据' });
+  const meta = imageMeta(buf);
+  if (!meta) return res.status(400).json({ error: '无法解析图片尺寸，文件可能已损坏' });
   const dir = path.join(PHOTO_DIR, String(j.id));
   fs.mkdirSync(dir, { recursive: true });
   const filename = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}.${ext}`;
   fs.writeFileSync(path.join(dir, filename), buf);
   const nextSort = (db.prepare('SELECT MAX(sort) s FROM journal_photos WHERE journal_id=?').get(j.id).s || 0) + 1;
-  const info = db.prepare('INSERT INTO journal_photos(journal_id, spot, filename, sort) VALUES(?,?,?,?)')
-    .run(j.id, String(spot || '').slice(0, 50), filename, nextSort);
+  const info = db.prepare('INSERT INTO journal_photos(journal_id, spot, filename, sort, width, height, bytes) VALUES(?,?,?,?,?,?,?)')
+    .run(j.id, String(spot || '').slice(0, 50), filename, nextSort, meta.width, meta.height, buf.length);
   touch(j.id);
-  res.json({ photo: { id: info.lastInsertRowid, spot: String(spot || ''), caption: '', caption_by: '', sort: nextSort } });
+  res.json({ photo: { id: info.lastInsertRowid, spot: String(spot || ''), caption: '', caption_by: '', sort: nextSort, width: meta.width, height: meta.height, bytes: buf.length } });
 });
 
 // 图片本体：<img> 直链（query token 鉴权，走主中间件即可，不进 EXEMPT）
@@ -157,7 +190,7 @@ r.put('/:id/photos/order', (req, res) => {
   const upd = db.prepare('UPDATE journal_photos SET sort=? WHERE id=?');
   ids.forEach((pid, i) => upd.run(i + 1, pid));
   touch(j.id);
-  res.json({ ok: true, photos: db.prepare('SELECT id, spot, caption, caption_by, sort FROM journal_photos WHERE journal_id=? ORDER BY sort, id').all(j.id) });
+  res.json({ ok: true, photos: db.prepare('SELECT id, spot, caption, caption_by, sort, width, height, bytes FROM journal_photos WHERE journal_id=? ORDER BY sort, id').all(j.id) });
 });
 
 // 手写/保存配文
@@ -316,7 +349,7 @@ r.post('/:id/content/save-version', (req, res) => {
   const j = myJournal(req, req.params.id);
   if (!j) return res.status(404).json({ error: '游记不存在' });
   const b = req.body || {};
-  const text = String(b.content !== undefined ? b.content : j.content).slice(0, 200000);
+  const text = cleanContent(b.content !== undefined ? b.content : j.content);
   if (!text.trim()) return res.status(400).json({ error: '正文是空的，没有可保存的版本' });
   db.prepare("UPDATE journals SET content=?, content_manual=?, updated_at=datetime('now','localtime') WHERE id=?").run(text, text, j.id);
   res.json({ ok: true, content: text, manual_len: text.length });

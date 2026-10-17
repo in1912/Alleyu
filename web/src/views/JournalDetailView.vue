@@ -104,6 +104,7 @@
                     <span class="pnum">(photo:{{ p.sort }})</span>
                   </div>
                   <span v-if="p.caption" class="tcap">{{ p.caption }}</span>
+                  <span class="tmeta">{{ sizeLabel(p) }}</span>
                 </div>
                 <span class="hint" style="align-self: center">未手选封面时，生成完随机选一张。</span>
               </div>
@@ -123,10 +124,10 @@
             <p v-else-if="j?.route?.reason" class="hint">没画出连线：{{ j.route.reason }}</p>
           </div>
 
-          <!-- 编辑模式：自动保存实时版；「保存一版」存手动版，可恢复手动版/系统原版 -->
+          <!-- 编辑模式：富文本（存 HTML），自动保存实时版；「保存一版」存手动版 -->
           <div v-if="editing" class="card">
             <div class="pb-bar">
-              <span class="hint">编辑游记 Markdown 原文（图片占位 <code>![说明](photo:序号)</code> 保留即可，导出时自动换回真图）。改动会自动存成当前正文。</span>
+              <span class="hint">富文本编辑：图片直接显示，尺寸标在图片下方。改动会自动存成当前正文。</span>
               <div class="pb-btns">
                 <span class="hint" v-if="saveHint">{{ saveHint }}</span>
                 <button class="btn ghost sm" :disabled="busyRestore || !j?.has_manual"
@@ -139,7 +140,20 @@
                 <button class="btn sm" :disabled="savingVer" @click="saveVersion">{{ savingVer ? '保存中…' : '保存一版' }}</button>
               </div>
             </div>
-            <textarea v-model="editText" class="editarea" spellcheck="false" @input="onEditInput"></textarea>
+            <div class="rt-tools">
+              <button class="rtb" title="二级标题" @mousedown.prevent="cmd('formatBlock', 'h2')">H2</button>
+              <button class="rtb" title="三级标题" @mousedown.prevent="cmd('formatBlock', 'h3')">H3</button>
+              <span class="rt-sep"></span>
+              <button class="rtb" title="加粗" @mousedown.prevent="cmd('bold')"><b>B</b></button>
+              <button class="rtb" title="斜体" @mousedown.prevent="cmd('italic')"><i>I</i></button>
+              <button class="rtb" title="无序列表" @mousedown.prevent="cmd('insertUnorderedList')">• 列表</button>
+              <button class="rtb" title="引用" @mousedown.prevent="cmd('formatBlock', 'blockquote')">❝</button>
+              <span class="rt-sep"></span>
+              <button class="rtb" title="插入图片 / 调整显示宽度" @mousedown.prevent="openImgDlg">🖼 插图</button>
+              <button class="rtb" title="撤销" @mousedown.prevent="cmd('undo')">↶</button>
+            </div>
+            <div ref="editorEl" class="rt-editor" contenteditable="true" spellcheck="false"
+                 @input="onEditInput" @keyup="rememberRange" @mouseup="rememberRange" @blur="rememberRange"></div>
             <p class="hint ver-line">
               同一篇存三套：<b>实时版</b>（正在编辑，自动保存）· <b>手动版</b>{{ j?.has_manual ? `（${j.manual_len} 字，可「恢复一版」）` : '（还没存过）' }} ·
               <b>系统原版</b>{{ j?.has_original ? `（${j.original_len} 字，可「恢复原版」）` : '（无）' }}
@@ -154,17 +168,52 @@
         </div>
       </div>
     </template>
+
+    <!-- 插图对话框：从游记已上传的照片里选，或从本机/手机现传 -->
+    <div v-if="imgDlg" class="mask" @click.self="imgDlg = false">
+      <div class="card img-dlg">
+        <div class="dlg-head">
+          <b>插入图片</b>
+          <button class="xbtn always" @click="imgDlg = false">✕</button>
+        </div>
+        <div class="img-tabs">
+          <button class="btn ghost sm" :class="{ on: imgTab === 'uploaded' }" @click="imgTab = 'uploaded'">从游记照片选</button>
+          <button class="btn ghost sm" :class="{ on: imgTab === 'device' }" @click="imgTab = 'device'">从本机/手机上传</button>
+        </div>
+        <div v-if="imgTab === 'uploaded'" class="img-pane">
+          <p v-if="!photos.length" class="hint">这篇游记还没有照片，切到「从本机/手机上传」传一张。</p>
+          <div v-else class="picks">
+            <div v-for="p in photos" :key="p.id" class="pick" @click="insertPhoto(p)">
+              <img :src="photoUrlOf(p)" alt="" />
+              <span class="pk-cap">{{ p.caption || p.spot || ('照片 ' + p.sort) }}</span>
+              <span class="pk-meta">{{ sizeLabel(p) }}</span>
+            </div>
+          </div>
+        </div>
+        <div v-else class="img-pane">
+          <p class="hint">支持 PNG / JPEG / WEBP，单张 ≤ 8MB；手机上会直接打开相册或相机。</p>
+          <input ref="fileEl" class="input" type="file" accept="image/png,image/jpeg,image/webp" @change="onPickFile" />
+          <p v-if="imgBusy" class="hint">上传中…</p>
+        </div>
+        <div class="w-row">
+          <span class="hint">插入后的显示宽度：</span>
+          <button v-for="o in WIDTHS" :key="o.v" class="btn ghost sm" :class="{ on: imgWidth === o.v }" @click="imgWidth = o.v">{{ o.label }}</button>
+          <span class="hint">（原图 = 按图片自身尺寸，超宽时自动缩到栏宽）</span>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { marked } from 'marked';
 import { api, withToken, downloadPdfFile } from '../api/index.js';
 import { cleanMd } from '../md.js';
 import { PALETTES } from '../journalPalettes.js';
 import { renderJournalPng } from '../journalPng.js';
+import { isHtml, decorateJournalHtml, sizeLabel } from '../htmlMd.js';
 
 const route = useRoute();
 const id = route.params.id;
@@ -174,7 +223,19 @@ const photos = ref([]);
 const streamed = ref('');
 const stage = ref('');
 const editing = ref(false);
-const editText = ref('');
+const editorEl = ref(null);
+const imgDlg = ref(false);
+const imgTab = ref('uploaded');
+const imgWidth = ref(100);
+const imgBusy = ref(false);
+const fileEl = ref(null);
+const WIDTHS = [
+  { v: 100, label: '原图' },
+  { v: 75, label: '75%' },
+  { v: 50, label: '50%' },
+  { v: 33, label: '33%' },
+];
+let savedRange = null;
 const pngBusy = ref(false);
 const pdfBusy = ref(false);
 const titleEditing = ref(false);
@@ -204,10 +265,14 @@ const peek = computed(() => (streamed.value ? streamed.value.slice(-220) : ''));
 // 只有景点 ≥2 才值得摆路线卡（1 个点连不成线，0 个点更没得说）
 const routeCard = computed(() => !!j.value?.route && spots.value.length >= 2);
 
-// 正文：clean 后把 ![alt](photo:N) 占位换成真图 URL（N=照片 sort 值，与服务端 PDF 同一套约定）
+// 正文：新写入的是 HTML，AI 直接生成的和历史行仍是 Markdown——按内容判定分流。
+// ⚠️ HTML 绝不能进 cleanMd（它会从第一个 Markdown 标题开始截断，第一段/第一张图会静默消失）。
+const rawContent = () => streamed.value || j.value?.content || '';
+const photoUrlOf = (p) => withToken('/api/journals/' + id + '/photos/' + p.id + '/file');
 const html = computed(() => {
-  const md = mdWithPhotos(cleanMd(streamed.value || j.value?.content || ''));
-  return marked.parse(md);
+  const raw = rawContent();
+  const src = isHtml(raw) ? raw : marked.parse(mdWithPhotos(cleanMd(raw)));
+  return decorateJournalHtml(src, { photos: photos.value, photoUrl: photoUrlOf });
 });
 function mdWithPhotos(md) {
   return String(md || '').replace(/!\[([^\]]*)\]\(photo:(\d+)\)/g, (m, alt, n) => {
@@ -362,14 +427,68 @@ async function regen() {
     connect();
   } catch (e) { alert(e.message); }
 }
+// ---- 富文本编辑：种子 → contenteditable（只写一次 innerHTML，之后不再响应式覆盖，否则光标会跳） ----
+// Markdown 稿（AI 生成/历史行）先渲染成 HTML 再进编辑器；HTML 稿原样进。保存一律写 HTML。
+function seedHtml() {
+  const raw = rawContent();
+  return isHtml(raw) ? raw : marked.parse(mdWithPhotos(cleanMd(raw)));
+}
+function applyEditorSeed(seed) {
+  const el = editorEl.value;
+  if (!el) return;
+  el.innerHTML = decorateJournalHtml(seed, { photos: photos.value, photoUrl: photoUrlOf, editable: true });
+  try {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(false);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    savedRange = range.cloneRange();
+  } catch { /* 没有选区也不影响编辑 */ }
+}
 function startEdit() {
-  editText.value = j.value?.content || '';
   saveHint.value = '';
   editing.value = true;
+  nextTick(() => applyEditorSeed(seedHtml()));
+}
+// 序列化：图片 URL 换回 photo:N（绝不把 token/绝对地址写进库），编辑态属性与尺寸标注全部剥掉
+function serializeEditor() {
+  const el = editorEl.value;
+  if (!el) return '';
+  const clone = el.cloneNode(true);
+  clone.querySelectorAll('.rt-cap').forEach((n) => n.remove());
+  clone.querySelectorAll('img').forEach((img) => {
+    const wrap = img.closest ? img.closest('.rt-img') : null;
+    const sort = String((wrap && wrap.getAttribute('data-photo')) || img.getAttribute('data-photo') || '').trim();
+    if (sort) img.setAttribute('src', 'photo:' + sort);
+    img.removeAttribute('data-photo');
+    ['srcset', 'width', 'height'].forEach((a) => img.removeAttribute(a));
+    ['width', 'height', 'max-width'].forEach((p) => img.style.removeProperty(p));
+  });
+  clone.querySelectorAll('.rt-img').forEach((w) => w.removeAttribute('contenteditable'));
+  clone.removeAttribute('contenteditable');
+  clone.removeAttribute('spellcheck');
+  return clone.innerHTML.trim();
+}
+function rememberRange() {
+  const el = editorEl.value;
+  const sel = window.getSelection();
+  if (!el || !sel || !sel.rangeCount) return;
+  const r = sel.getRangeAt(0);
+  if (el.contains(r.commonAncestorContainer)) savedRange = r.cloneRange();
+}
+function cmd(name, val) {
+  const el = editorEl.value;
+  if (!el) return;
+  el.focus();
+  try { document.execCommand(name, false, val); } catch { /* 浏览器不支持就忽略 */ }
+  rememberRange();
+  onEditInput();
 }
 function closeEdit() {
   clearTimeout(autoTimer); // 最后一次输入若还没落库，取消编辑前先补一次
-  if (editText.value !== (j.value?.content || '')) pushLive();
+  if (serializeEditor() !== (j.value?.content || '')) pushLive();
   editing.value = false;
 }
 // 自动保存实时版（防抖 1.2s）：编辑框里改的就是当前正文，页面刷新/关掉都不丢
@@ -379,10 +498,12 @@ function onEditInput() {
   autoTimer = setTimeout(pushLive, 1200);
 }
 async function pushLive() {
+  const content = serializeEditor();
   try {
-    await api('/journals/' + id, { method: 'PUT', body: { content: editText.value } });
-    streamed.value = editText.value;
-    j.value = { ...j.value, content: editText.value };
+    const r = await api('/journals/' + id, { method: 'PUT', body: { content } });
+    const saved = r.journal ? r.journal.content : content; // 服务端净化后的权威值
+    streamed.value = saved;
+    j.value = { ...j.value, content: saved };
     saveHint.value = '已自动保存 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
   } catch (e) { saveHint.value = '自动保存失败：' + e.message; }
 }
@@ -390,7 +511,7 @@ async function saveVersion() {
   savingVer.value = true;
   clearTimeout(autoTimer);
   try {
-    const r = await api('/journals/' + id + '/content/save-version', { method: 'POST', body: { content: editText.value } });
+    const r = await api('/journals/' + id + '/content/save-version', { method: 'POST', body: { content: serializeEditor() } });
     streamed.value = r.content;
     j.value = { ...j.value, content: r.content, has_manual: true, manual_len: r.manual_len };
     saveHint.value = '已保存一版（' + r.manual_len + ' 字）';
@@ -403,11 +524,67 @@ async function restoreVersion(which) {
   clearTimeout(autoTimer);
   try {
     const r = await api('/journals/' + id + '/content/restore', { method: 'POST', body: { which } });
-    editText.value = r.content;
     streamed.value = r.content;
     j.value = { ...j.value, content: r.content };
+    applyEditorSeed(isHtml(r.content) ? r.content : marked.parse(cleanMd(r.content)));
     saveHint.value = '已恢复' + label;
   } catch (e) { alert('恢复失败：' + e.message); } finally { busyRestore.value = false; }
+}
+
+// ---- 插图：从已上传照片里选 / 从本机或手机现传；插入时按选定宽度写 data-w ----
+function openImgDlg() {
+  rememberRange();
+  imgTab.value = photos.value.length ? 'uploaded' : 'device';
+  imgWidth.value = 100;
+  imgDlg.value = true;
+}
+function photoHtml(p, w) {
+  const url = photoUrlOf(p);
+  const alt = String(p.caption || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  const style = (w > 0 && w < 100)
+    ? ` style="width:${w}%;max-width:100%;height:auto"`
+    : ' style="max-width:100%;height:auto"';
+  return `<span class="rt-img" data-photo="${p.sort}" data-w="${w}"><img src="${url}" alt="${alt}"${style}>`
+    + `<span class="rt-cap" contenteditable="false">${sizeLabel(p)}</span></span><p><br></p>`;
+}
+function insertPhoto(p) {
+  const el = editorEl.value;
+  if (!el) { imgDlg.value = false; return; }
+  el.focus();
+  const sel = window.getSelection();
+  if (savedRange && el.contains(savedRange.commonAncestorContainer)) {
+    sel.removeAllRanges();
+    sel.addRange(savedRange);
+  }
+  const html = photoHtml(p, imgWidth.value);
+  let ok = false;
+  try { ok = document.execCommand('insertHTML', false, html); } catch { ok = false; }
+  if (!ok) el.insertAdjacentHTML('beforeend', html);
+  imgDlg.value = false;
+  rememberRange();
+  onEditInput();
+}
+function onPickFile(e) {
+  const f = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  if (!/^image\/(png|jpeg|webp)$/i.test(f.type)) return alert('只支持 PNG / JPEG / WEBP');
+  if (f.size > 8 * 1024 * 1024) return alert('单张照片不能超过 8MB');
+  const reader = new FileReader();
+  reader.onload = async () => {
+    imgBusy.value = true;
+    try {
+      const r = await api('/journals/' + id + '/photos', {
+        method: 'POST',
+        body: { data_url: String(reader.result), spot: (spots.value[0] && spots.value[0].name) || '' },
+      });
+      photos.value = [...photos.value, r.photo];
+      insertPhoto(r.photo);
+      saveHint.value = '已上传照片 (photo:' + r.photo.sort + ')';
+    } catch (e2) { alert('上传失败：' + e2.message); } finally { imgBusy.value = false; }
+  };
+  reader.onerror = () => alert('读取文件失败');
+  reader.readAsDataURL(f);
 }
 async function del() {
   if (!confirm('删除这篇游记？照片一并删除，不可恢复。')) return;
@@ -422,10 +599,12 @@ async function exportPng() {
   if (pngBusy.value) return;
   pngBusy.value = true;
   try {
+    const raw = j.value?.content || '';
     await renderJournalPng({
       title: j.value?.title || j.value?.destination || '旅行游记',
       subtitle: j.value?.subtitle || subFallback.value,
-      markdown: cleanMd(j.value?.content || ''),
+      // HTML 稿在 journalPng 里转回 Markdown；只能对 Markdown 调 cleanMd
+      markdown: isHtml(raw) ? raw : cleanMd(raw),
       palette: pal.value,
       coverUrl: coverUrl.value,
       photoUrls: photos.value.map((p) => ({ sort: p.sort, url: withToken('/api/journals/' + id + '/photos/' + p.id + '/file') })),
@@ -521,9 +700,38 @@ onBeforeUnmount(() => {
 .route-sum { margin: 10px 0 0; font-size: 13.5px; color: var(--text); line-height: 1.7; }
 .pb-bar { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
 .pb-btns { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.editarea { width: 100%; min-height: 420px; box-sizing: border-box; font-family: Consolas, monospace; font-size: 13px; line-height: 1.7; }
 .ver-line { margin-top: 8px; line-height: 1.7; }
 .jr-md :deep(img) { max-width: 100%; border-radius: 10px; margin: 8px 0; }
+/* 富文本编辑区（v1.12.0） */
+.rt-tools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 6px 8px; border: 1px solid var(--line); border-bottom: none; border-radius: 10px 10px 0 0; background: var(--card2); }
+.rtb { border: 1px solid transparent; background: none; color: var(--text); font-size: 12.5px; padding: 4px 9px; border-radius: 7px; cursor: pointer; line-height: 1.4; }
+.rtb:hover { background: var(--card); border-color: var(--line); }
+.rt-sep { width: 1px; height: 16px; background: var(--line); margin: 0 3px; }
+.rt-editor { min-height: 420px; box-sizing: border-box; padding: 14px 16px; border: 1px solid var(--line); border-radius: 0 0 10px 10px; background: var(--card); font-size: 14px; line-height: 1.85; outline: none; overflow-wrap: break-word; }
+.rt-editor:focus { border-color: var(--acc-d); }
+.rt-editor :deep(h2) { font-size: 20px; margin: 14px 0 8px; border-bottom: 1px solid var(--line); padding-bottom: 5px; }
+.rt-editor :deep(h3) { font-size: 16.5px; margin: 12px 0 6px; }
+.rt-editor :deep(blockquote) { margin: 10px 0; padding: 6px 12px; border-left: 3px solid var(--acc-d); color: var(--mut); background: var(--card2); border-radius: 0 8px 8px 0; }
+.rt-editor :deep(img) { border-radius: 8px; display: block; margin: 4px 0; }
+.rt-editor :deep(.rt-img), .jr-md :deep(.rt-img) { display: block; margin: 12px 0; }
+.rt-editor :deep(.rt-cap), .jr-md :deep(.rt-cap) { display: block; font-size: 11.5px; color: var(--mut); margin-top: 3px; }
+.tmeta { display: block; font-size: 10.5px; color: var(--mut); padding: 0 5px 4px; background: var(--card2); }
+/* 插图对话框 */
+.mask { position: fixed; inset: 0; background: rgba(20, 30, 22, 0.42); display: flex; align-items: center; justify-content: center; z-index: 120; padding: 16px; }
+.img-dlg { width: min(720px, 100%); max-height: 86vh; overflow: auto; }
+.dlg-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.xbtn.always { opacity: 1; font-size: 15px; }
+.img-tabs { display: flex; gap: 8px; margin-bottom: 10px; }
+.img-tabs .btn.on { border-color: var(--acc-d); color: var(--text); background: var(--card2); }
+.img-pane { margin-bottom: 10px; }
+.picks { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
+.pick { border: 1px solid var(--line); border-radius: 9px; overflow: hidden; cursor: pointer; background: var(--card); }
+.pick:hover { border-color: var(--acc-d); }
+.pick img { width: 100%; height: 84px; object-fit: cover; display: block; }
+.pk-cap { display: block; font-size: 12px; padding: 4px 6px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pk-meta { display: block; font-size: 10.5px; color: var(--mut); padding: 1px 6px 5px; }
+.w-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding-top: 8px; border-top: 1px solid var(--line); }
+.w-row .btn.on { border-color: var(--acc-d); color: var(--text); background: var(--card2); }
 .jr-md :deep(h2) { border-bottom: 1px solid var(--line); padding-bottom: 6px; }
 .promptbox { margin-top: 14px; }
 .promptbox pre { white-space: pre-wrap; font-size: 12px; max-height: 320px; overflow: auto; }

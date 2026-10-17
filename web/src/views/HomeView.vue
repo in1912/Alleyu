@@ -77,10 +77,10 @@ let sugTimer = 0;
 const LINKS = [
   { href: '#/plan', label: '🧭 生成攻略', page: 'guides' },
   { href: '#/history', label: '📚 我的攻略', page: 'guides' },
-  { href: '#/journals', label: '📖 游记整理', page: 'guides' },
+  { href: '#/journals', label: '📖 生成游记', page: 'guides' },
   { href: '#/library', label: '🗺️ 城市景点库', page: 'library', adminOnly: true },
   { href: '#/weather', label: '🌤️ 天气', page: 'weather' },
-  { href: '#/account', label: '👤 我的账号', always: true },
+  { href: '#/account', label: '👤 我的', always: true },
   { href: '#/settings', label: '⚙️ 设置', page: 'settings', adminOnly: true },
   { href: '#/users', label: '👥 用户管理', page: 'settings', adminOnly: true },
 ];

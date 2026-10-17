@@ -195,10 +195,45 @@ table.tb th { color: var(--mut); font-weight: 500; font-size: 12.5px; }
 .dlg { background: var(--card); border-radius: 16px; padding: 22px; width: min(560px, 96vw); max-height: 88vh; overflow: auto; }
 .dlg h3 { margin: 0 0 14px; color: var(--acc-d); }
 
+/* v1.12.0 手机底栏：桌面一律不显示（只在窄屏媒体查询里启用） */
+.m-nav, .m-mask { display: none; }
+
 @media (max-width: 760px) {
-  .side { width: 60px; padding: 14px 6px; }
-  .side .logo small, .side .nav-item span.txt, .side .me { display: none; }
-  .nav-item { justify-content: center; }
+  /* 手机端不再用左侧窄栏，改成底部悬浮栏（四项 + 管理员「更多」） */
+  .side { display: none; }
+  .main { padding: 16px 12px calc(84px + env(safe-area-inset-bottom)); }
+  .m-nav {
+    display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 90;
+    background: rgba(247, 250, 245, 0.96); border-top: 1px solid var(--line);
+    backdrop-filter: blur(8px);
+    padding: 6px 4px calc(6px + env(safe-area-inset-bottom));
+    justify-content: space-around; align-items: stretch;
+  }
+  .m-item {
+    flex: 1 1 0; display: flex; flex-direction: column; align-items: center; gap: 2px;
+    border: none; background: none; color: var(--mut); font-size: 11px;
+    padding: 4px 2px; cursor: pointer; border-radius: 10px; text-decoration: none;
+  }
+  .m-item .ic { width: 24px; height: 22px; display: flex; align-items: center; justify-content: center; }
+  .m-item .ic svg { width: 21px; height: 21px; }
+  .m-item.on { color: var(--acc-d); font-weight: 700; }
+  .m-item.on .ic { background: var(--acc-l); border-radius: 8px; }
+  .m-mask {
+    display: flex; position: fixed; inset: 0; z-index: 89;
+    background: rgba(30, 40, 30, 0.35); align-items: flex-end;
+  }
+  .m-sheet {
+    width: 100%; background: var(--card); border-radius: 16px 16px 0 0;
+    padding: 10px 10px calc(12px + env(safe-area-inset-bottom));
+    max-height: 60vh; overflow: auto; box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.12);
+  }
+  .m-sheet-item {
+    display: flex; align-items: center; gap: 10px; padding: 12px;
+    border-radius: 10px; color: var(--ink); font-size: 14.5px; cursor: pointer;
+  }
+  .m-sheet-item:hover { background: var(--card2); }
+  .m-sheet-item .ic { width: 20px; text-align: center; }
+  .m-sheet-item .ic svg { width: 17px; height: 17px; }
 }
 
 /* ---- 打印 / 导出 PDF（v1.6.0）：攻略页与分享页共用，只留正文 ----

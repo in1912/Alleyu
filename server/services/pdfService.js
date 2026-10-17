@@ -8,6 +8,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const PDFDocument = require('pdfkit');
 const { marked } = require('marked');
+const { isHtml, htmlToMd } = require('./htmlMd');
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', '..', 'data');
 const A4 = [595.28, 841.89];
@@ -315,7 +316,10 @@ async function renderJournalPdf({ title, subtitle, markdown, palette = 1, mode =
     throw Object.assign(new Error('服务器没有可用的中文字体（只认单文件 .ttf/.otf，.ttc 不支持）。Windows 用系统等线/黑体即可；Docker/Linux 请把任一中文 .ttf/.otf 放到 data/fonts/ 目录或设 ALLEYU_PDF_FONT 环境变量。'), { code: 'NO_FONT' });
   }
   const P = paletteOf(palette);
-  const tokens = marked.lexer(cleanForPdf(markdown));
+  // v1.12.0：游记正文可能是 HTML（富文本编辑保存的）。HTML 走 htmlToMd 转回 Markdown，
+  // **绝不进 cleanForPdf**——那个函数会「从第一个 Markdown 标题开始截断」，HTML 开头是 <p>，
+  // 送进去会把第一段/第一张图静默吞掉。Markdown 走原来的清洗，一个字不改。
+  const tokens = marked.lexer(isHtml(markdown) ? htmlToMd(markdown) : cleanForPdf(markdown));
   const srcs = collectImageSrcs(tokens, []);
   for (const s of srcs) if (extraImages[s]) continue; // extraImages 优先，其余按外链规则
   const images = { ...extraImages };

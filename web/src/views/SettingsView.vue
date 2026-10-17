@@ -6,6 +6,7 @@
       <div class="t" :class="{ on: tab === 'invite' }" @click="tab = 'invite'">邀请码</div>
       <div class="t" :class="{ on: tab === 'upgrade' }" @click="tab = 'upgrade'">升级</div>
       <div class="t" :class="{ on: tab === 'sys' }" @click="tab = 'sys'">系统</div>
+      <div class="t" :class="{ on: tab === 'wiki' }" @click="tab = 'wiki'">维基与补全</div>
     </div>
 
     <!-- AI 全局（admin，v1.6.0 起全站唯一一份 Key）。v1.10.0：本页整页仅管理员可达 -->
@@ -284,6 +285,55 @@
       </div>
       <p v-if="sMsg" :class="sOk ? 'ok-text' : 'err-text'" style="margin: 8px 0 0; font-size: 13px">{{ sMsg }}</p>
     </div>
+
+    <!-- 维基与补全（v1.12.0）：两家各一个开关，默认都关；关着就一个请求都不发 -->
+    <div v-if="tab === 'wiki'" class="card">
+      <h3 style="margin-top: 0">维基介绍来源</h3>
+      <p class="hint" style="margin-top: 0">
+        景点介绍来自维基。两家<b>默认都关闭</b>；<b>未勾选的站点不会发起任何请求</b>（这就是「去掉维基百科连接」的实现）。
+        境内多数网络直连维基会超时——先点「测试连接」确认通不通，再决定要不要勾。
+        勾选后，单条「补介绍」和「一键补全」才会去抓。
+      </p>
+
+      <div class="wiki-row">
+        <label class="chk">
+          <input type="checkbox" v-model="w.voyage" />
+          <span>维基旅行（zh.wikivoyage.org）</span>
+        </label>
+        <button class="btn ghost sm" :disabled="wProbe.voyage.busy" @click="probeWiki('voyage')">{{ wProbe.voyage.busy ? '测试中…' : '测试连接' }}</button>
+        <span v-if="wProbe.voyage.text" :class="wProbe.voyage.ok ? 'ok-text' : 'err-text'">{{ wProbe.voyage.text }}</span>
+      </div>
+
+      <div class="wiki-row">
+        <label class="chk">
+          <input type="checkbox" v-model="w.pedia" />
+          <span>维基百科（zh.wikipedia.org）</span>
+        </label>
+        <button class="btn ghost sm" :disabled="wProbe.pedia.busy" @click="probeWiki('pedia')">{{ wProbe.pedia.busy ? '测试中…' : '测试连接' }}</button>
+        <span v-if="wProbe.pedia.text" :class="wProbe.pedia.ok ? 'ok-text' : 'err-text'">{{ wProbe.pedia.text }}</span>
+      </div>
+
+      <p class="hint" style="margin: 6px 0 0">
+        两家都关时，「补介绍 / 一键补全」会如实告诉你「维基介绍未开启」，只导入高德景点，不会假装抓到介绍。
+      </p>
+
+      <hr style="border: none; border-top: 1px solid var(--line); margin: 20px 0" />
+      <h3 style="margin-top: 0">批量补全的城市筛选</h3>
+      <p class="hint" style="margin-top: 0">
+        「补全全部缺景点城市」原来只处理一个景点都没有的城市；现在改成<b>景点数少于 N</b> 的城市也参与
+        （严格的「少于」：N=6 时 0~5 条的城市会被选中，正好 6 条的不选）。已有景点的一律跳过、不重复拉高德。
+      </p>
+      <div style="display: flex; gap: 10px; align-items: end; max-width: 420px">
+        <div style="flex: 1">
+          <label class="fld">景点数少于 N 的城市也参与补全（0~100）</label>
+          <input v-model="w.maxAttrs" class="input" inputmode="numeric" placeholder="留空 = 默认 6" />
+        </div>
+      </div>
+      <div style="display: flex; gap: 10px; margin-top: 14px; align-items: center">
+        <button class="btn" :disabled="wBusy" @click="saveWiki">{{ wBusy ? '保存中…' : '保存维基设置' }}</button>
+        <span v-if="wMsg" :class="wOk ? 'ok-text' : 'err-text'" style="margin: 0">{{ wMsg }}</span>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -312,6 +362,42 @@ const qMsg = ref(''); const qOk = ref(false);
 // 公开访问地址（v1.10.2）：拼分享链接用的域名，留空=跟随当前地址
 const s = reactive({ publicBase: '' });
 const sMsg = ref(''); const sOk = ref(false);
+
+// 维基分站开关 + 补全阈值（v1.12.0）
+const w = reactive({ voyage: false, pedia: false, maxAttrs: '6' });
+const wMsg = ref(''); const wOk = ref(false); const wBusy = ref(false);
+const wProbe = reactive({
+  voyage: { busy: false, text: '', ok: null },
+  pedia: { busy: false, text: '', ok: null },
+});
+async function probeWiki(site) {
+  const st2 = wProbe[site];
+  st2.busy = true; st2.text = '测试中…'; st2.ok = null;
+  try {
+    // 探针刻意不看开关：就是要「勾选之前」先测通不通
+    const j = await api('/wiki/probe?site=' + site);
+    const one = (j.sites || [])[0] || {};
+    if (one.ok) {
+      st2.ok = true;
+      st2.text = `可达（${one.ms != null ? one.ms + 'ms' : '已响应'}）`;
+    } else {
+      st2.ok = false;
+      const why = one.error || '连不上（超时或网络不通）';
+      st2.text = j.timeout_ms ? `${why}（单站点超时 ${j.timeout_ms}ms）` : why;
+    }
+  } catch (e) { st2.ok = false; st2.text = e.message; } finally { st2.busy = false; }
+}
+async function saveWiki() {
+  wMsg.value = '';
+  wBusy.value = true;
+  try {
+    await api('/settings', { method: 'PUT', body: { wiki_voyage_enabled: w.voyage, wiki_pedia_enabled: w.pedia, backfill_max_attrs: w.maxAttrs } });
+    wOk.value = true;
+    wMsg.value = (w.voyage || w.pedia)
+      ? '已保存'
+      : '已保存（两家都关闭：补介绍与补全都不会发起任何维基请求）';
+  } catch (e) { wOk.value = false; wMsg.value = e.message; } finally { wBusy.value = false; }
+}
 async function saveSys() {
   sMsg.value = '';
   try {
@@ -521,6 +607,9 @@ onMounted(async () => {
   q.guide = stt.quota_default_guide || '';
   q.journal = stt.quota_default_journal || '';
   s.publicBase = stt.public_base_url || '';
+  w.voyage = stt.wiki_voyage_enabled === true;
+  w.pedia = stt.wiki_pedia_enabled === true;
+  w.maxAttrs = stt.backfill_max_attrs === undefined || stt.backfill_max_attrs === null ? '6' : String(stt.backfill_max_attrs);
   sys.value = await api('/system-info');
   await loadInvites();
   await loadUpgrade();
@@ -530,4 +619,7 @@ onMounted(async () => {
 <style scoped>
 .grid3 { display: grid; grid-template-columns: 1fr 1fr 1.4fr; gap: 12px; }
 @media (max-width: 760px) { .grid3 { grid-template-columns: 1fr; } }
+.wiki-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 0; border-bottom: 1px dashed var(--line); }
+.chk { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; min-width: 260px; }
+.chk input { width: 16px; height: 16px; accent-color: var(--acc-d); }
 </style>

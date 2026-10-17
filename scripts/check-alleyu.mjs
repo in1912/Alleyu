@@ -218,6 +218,45 @@ try {
   ok(r.status === 200 && r.j.attraction && r.j.attraction.intro === '杭州西湖，世界文化遗产，湖光山色。' && r.j.attraction.intro_source === '', '登录用户可编辑介绍（默认不动署名字段）', `status=${r.status} text=${(r.text || '').slice(0, 300)}`);
   r = await req(`/api/attractions/${xihu.id}`, { method: 'PUT', token: admin, body: { intro_source: '维基百科', intro_url: 'https://zh.wikipedia.org/wiki/%E8%A5%BF%E6%B9%96' } });
   ok(r.status === 200 && r.j.attraction && r.j.attraction.intro_source === '维基百科' && r.j.attraction.intro_url.includes('wikipedia.org'), 'admin 显式设置署名（CC BY-SA 署名进库）', `status=${r.status} body=${(r.text || '').slice(0, 300)}`);
+
+  // ---- v1.12.0：维基分站开关 + 补全阈值（两家各一个开关，**默认全关 = 一个请求都不发**） ----
+  // 这一组必须在下面「离线模式补介绍」之前跑：默认全关时 enrich-intro 会先回 409，
+  // 所以测完默认态与「未开启」路径后要**显式把两个开关打开**，既有离线断言才走得到维基。
+  console.log('== 维基分站开关与补全阈值（v1.12.0） ==');
+  r = await req('/api/settings', { token: admin });
+  ok(r.status === 200 && r.j.wiki_voyage_enabled === false && r.j.wiki_pedia_enabled === false && r.j.backfill_max_attrs === 6,
+    '设置默认：两家维基都没开、补全阈值 6',
+    JSON.stringify({ v: r.j.wiki_voyage_enabled, p: r.j.wiki_pedia_enabled, n: r.j.backfill_max_attrs }));
+  r = await req(`/api/attractions/${xihu.id}/enrich-intro`, { method: 'POST', token: admin });
+  ok(r.status === 409 && r.j.code === 'WIKI_DISABLED',
+    '两家都没勾：单条补介绍 409 WIKI_DISABLED（碰网络之前就拦住）', `status=${r.status} body=${(r.text || '').slice(0, 200)}`);
+  // 自建一座国际线路小城来测「未开启」：国际线跳过高德，断言不受外网 Key 影响；测完删城（级联删景点）
+  r = await req('/api/cities', { method: 'POST', token: admin, body: { name: '维基开关城', line: '测试海外线' } });
+  const wcId = r.j.city.id;
+  r = await req('/api/attractions', { method: 'POST', token: u1, body: { city_id: wcId, name: '开关测试景点' } });
+  ok(r.status === 200, '建「未开启」测试城市与景点');
+  r = await req(`/api/cities/${wcId}/backfill`, { method: 'POST', token: admin });
+  ok(r.status === 200 && r.j.wiki_disabled === true && r.j.intro_tried === 0 && r.j.intro_left === 1,
+    '两家都没勾：一键补全回 wiki_disabled、介绍一条没试、intro_left 如实', JSON.stringify(r.j).slice(0, 240));
+  ok(/维基介绍未开启/.test(r.j.intro_error || ''), '未开启的文案说「未开启」，不冒充「连不上」', r.j.intro_error);
+  await req(`/api/cities/${wcId}`, { method: 'DELETE', token: admin });
+  // 非法值：开关只收布尔语义；阈值只收 0~100 整数
+  r = await req('/api/settings', { method: 'PUT', token: admin, body: { wiki_voyage_enabled: 'yes' } });
+  ok(r.status === 400, '开关非法值 400（只收开/关）', `status=${r.status}`);
+  r = await req('/api/settings', { method: 'PUT', token: admin, body: { backfill_max_attrs: 101 } });
+  ok(r.status === 400, '阈值 101 越界 400');
+  r = await req('/api/settings', { method: 'PUT', token: admin, body: { backfill_max_attrs: 3.5 } });
+  ok(r.status === 400, '阈值 3.5 非整数 400');
+  // 打开两家 + 阈值 8 → 读回一致；随后阈值还原默认（开关保持开，后面的离线断言才走得到维基）
+  r = await req('/api/settings', { method: 'PUT', token: admin, body: { wiki_voyage_enabled: true, wiki_pedia_enabled: '1', backfill_max_attrs: 8 } });
+  ok(r.status === 200, '打开两家维基 + 阈值 8');
+  r = await req('/api/settings', { token: admin });
+  ok(r.j.wiki_voyage_enabled === true && r.j.wiki_pedia_enabled === true && r.j.backfill_max_attrs === 8,
+    '开关/阈值读回与写入一致');
+  r = await req('/api/settings', { method: 'PUT', token: admin, body: { backfill_max_attrs: '' } });
+  r = await req('/api/settings', { token: admin });
+  ok(r.j.backfill_max_attrs === 6, '阈值留空 = 恢复默认 6（开关保持开启）');
+
   // 离线模式（ALLEYU_WIKI_OFFLINE=1）：补介绍优雅失败、话里说明离线——防「离线测试偷跑真网」（高德的老教训）
   r = await req(`/api/attractions/${xihu.id}/enrich-intro`, { method: 'POST', token: u1 });
   ok(r.status === 403, '普通用户补介绍 403');
@@ -316,6 +355,10 @@ try {
     const c2 = await reqOn(inst2.base, '/api/cities', { method: 'POST', token: tk2, body: { name: '烟测城' } });
     const city2 = c2.j.city.id;
     for (const n of ['甲景点', '乙景点', '丙景点']) await reqOn(inst2.base, '/api/attractions', { method: 'POST', token: tk2, body: { city_id: city2, name: n } });
+    // v1.12.0：两个开关默认全关（全关时 backfill 连介绍段都不进，下面「慢路径有界」根本测不到）。
+    // 必须在第二实例上显式打开——否则那三条断言会变成 wiki_disabled=true 而永远绿。
+    const set2 = await reqOn(inst2.base, '/api/settings', { method: 'PUT', token: tk2, body: { wiki_voyage_enabled: true, wiki_pedia_enabled: true } });
+    ok(set2.status === 200, '第二实例：显式打开两家维基（默认全关）', `status=${set2.status}`);
     const t0 = Date.now();
     const bf = await reqOn(inst2.base, `/api/cities/${city2}/backfill`, { method: 'POST', token: tk2 });
     const spent = Date.now() - t0;
@@ -340,6 +383,119 @@ try {
     const offProbe = await reqOn(BASE, '/api/wiki/probe', { token: admin });
     ok(offProbe.status === 200 && offProbe.j.offline === true && offProbe.j.reachable === false,
       '离线自检模式下的探针如实说「离线模式、没打真网」（绝不在离线自检里偷跑外网）', JSON.stringify(offProbe.j));
+  }
+
+  // ---- v1.12.0：纯函数与分站过滤（零 db、零真实网络） ----
+  // 这些模块都刻意不 require db（wikiService / imageSize / htmlMd / htmlSanitize），
+  // 可以在 check 进程内直接 require 跑确定性断言；涉及模块级 env 的（SITES）才开子进程。
+  console.log('== 纯函数：维基分站 / 阈值 / 图片尺寸 / HTML⇄Markdown（v1.12.0） ==');
+  {
+    const require3 = createRequire(import.meta.url);
+    const wikiSvc = require3(path.join(ROOT, 'server', 'services', 'wikiService.js'));
+    ok(wikiSvc.siteKind({ label: '维基旅行', origin: 'https://zh.wikivoyage.org' }) === 'voyage', 'siteKind：wikivoyage → voyage');
+    ok(wikiSvc.siteKind({ label: '维基百科', origin: 'https://zh.wikipedia.org' }) === 'pedia', 'siteKind：wikipedia → pedia');
+    ok(wikiSvc.siteKind({ label: '桩A', origin: 'http://127.0.0.1:1' }, 0) === 'voyage'
+      && wikiSvc.siteKind({ label: '桩B', origin: 'http://127.0.0.1:1' }, 1) === 'pedia',
+      'siteKind：认不出域名时按下标兜底（自检桩也能分类）');
+
+    // 两家各一个「会答」的桩：计数器证明「没勾的那家一次都没被访问」
+    let voyHits = 0, pedHits = 0;
+    const wikiStub = (hit) => http.createServer((rq, rs) => {
+      hit();
+      rs.writeHead(200, { 'Content-Type': 'application/json' });
+      rs.end(JSON.stringify({ query: { pages: { 1: {
+        pageid: 1, title: '故宫博物院',
+        extract: '故宫博物院，明清两代的皇家宫殿，旧称紫禁城，位于北京中轴线的中心，是中国古代宫廷建筑之精华。',
+        fullurl: 'http://127.0.0.1/wiki/故宫博物院',
+      } } } }));
+    });
+    const voySrv = wikiStub(() => { voyHits++; });
+    const pedSrv = wikiStub(() => { pedHits++; });
+    await new Promise((res) => voySrv.listen(0, '127.0.0.1', res));
+    await new Promise((res) => pedSrv.listen(0, '127.0.0.1', res));
+    const bothOrigins = `维基旅行|http://127.0.0.1:${voySrv.address().port},维基百科|http://127.0.0.1:${pedSrv.address().port}`;
+    // SITES 是模块级常量，env 改了不重读 → 必须开子进程
+    const probeSel = (sites) => new Promise((resolve) => {
+      const opt = sites === undefined ? '' : `, { sites: ${JSON.stringify(sites)} }`;
+      const jsSel = `
+        const w = require(${JSON.stringify(path.join(ROOT, 'server', 'services', 'wikiService.js'))});
+        (async () => {
+          const r = await w.fetchIntroEx('故宫博物院'${opt});
+          process.stdout.write(JSON.stringify({ netFail: r.netFail, src: r.hit && r.hit.source }));
+        })();
+      `;
+      const ch = spawn(process.execPath, ['-e', jsSel], {
+        env: { ...process.env, ALLEYU_WIKI_OFFLINE: '', ALLEYU_WIKI_ORIGINS: bothOrigins, ALLEYU_WIKI_TIMEOUT_MS: '2000' },
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      let out = '';
+      ch.stdout.on('data', (d) => { out += d; });
+      ch.on('exit', () => { try { resolve(JSON.parse(out.trim())); } catch { resolve({ parse_error: out.trim(), src: '', netFail: null }); } });
+    });
+    voyHits = 0; pedHits = 0;
+    let selRes = await probeSel(['pedia']);
+    ok(selRes.src === '维基百科' && pedHits >= 1 && voyHits === 0,
+      '只勾「维基百科」：只打百科一家（旅行站零访问）', JSON.stringify({ selRes, voyHits, pedHits }));
+    voyHits = 0; pedHits = 0;
+    selRes = await probeSel([]);
+    ok(!selRes.src && voyHits === 0 && pedHits === 0,
+      '一家都不勾：fetchIntroEx 一个请求都不发（不是「连不上」）', JSON.stringify({ selRes, voyHits, pedHits }));
+    voyHits = 0; pedHits = 0;
+    selRes = await probeSel(['voyage']);
+    ok(selRes.src === '维基旅行' && voyHits >= 1 && pedHits === 0,
+      '只勾「维基旅行」：只打旅行站（百科零访问）', JSON.stringify({ selRes, voyHits, pedHits }));
+    voySrv.close(); pedSrv.close();
+
+    // 前端阈值筛选（web/src/libraryFilter.js 是纯 ESM，check 直接 import）
+    const lf = await import(new URL('../web/src/libraryFilter.js', import.meta.url).href);
+    const cityRows = [
+      { name: 'A', attr_count: 0, line: '国内' },
+      { name: 'B', attr_count: 5, line: '国内' },
+      { name: 'C', attr_count: 6, line: '国内' },
+      { name: 'D', attr_count: 3, line: '欧洲线' },
+    ];
+    ok(lf.pickBackfillCities(cityRows, 6).map((c) => c.name).join(',') === 'A,B',
+      '阈值 6：只选国内且景点数 <6（0/5 选中、6 不选、海外线路不算）',
+      lf.pickBackfillCities(cityRows, 6).map((c) => c.name).join(','));
+    ok(lf.backfillThreshold('') === 6 && lf.backfillThreshold('abc') === 6
+      && lf.backfillThreshold(101) === 6 && lf.backfillThreshold('8') === 8 && lf.backfillThreshold(0) === 0,
+      '阈值解析：空/非法回落 6，0~100 整数照收（0 合法）');
+
+    // 图片尺寸（纯函数）
+    const { imageMeta } = require3(path.join(ROOT, 'server', 'services', 'imageSize.js'));
+    const pngB64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    const pm2 = imageMeta(Buffer.from(pngB64, 'base64'));
+    ok(pm2 && pm2.width === 1 && pm2.height === 1, 'imageMeta：PNG 1×1 读对尺寸', JSON.stringify(pm2));
+    const wm2 = imageMeta(Buffer.from('UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==', 'base64'));
+    ok(wm2 && wm2.width === 1 && wm2.height === 1, 'imageMeta：WEBP 1×1（VP8L）读对尺寸', JSON.stringify(wm2));
+    ok(imageMeta(Buffer.alloc(0)) === null && imageMeta(Buffer.from('RIFFxxxxWEBPxxxxxx')) === null,
+      'imageMeta：空/畸形输入回 null，永不抛');
+
+    // HTML ⇄ Markdown（服务端口径）
+    const hm = require3(path.join(ROOT, 'server', 'services', 'htmlMd.js'));
+    ok(hm.isHtml('# 标题') === false && hm.isHtml('<https://example.com>') === false,
+      'isHtml：Markdown 标题与自动链接都不算 HTML（不能只看裸 <）');
+    ok(hm.isHtml('  <h2>小节</h2>') === true && hm.isHtml('<p>x</p>') === true,
+      'isHtml：块级标签（含前导空白）算 HTML');
+    const hmMd = hm.htmlToMd('<p>前言第一段，不能被吞。</p>'
+      + '<span class="rt-img" data-photo="1" data-w="75"><img src="photo:1" alt="湖面">'
+      + '<span class="rt-cap">1200×800 · 340 KB</span></span>'
+      + '<h2>第二天</h2><p>正文<strong>重点</strong></p>');
+    ok(hmMd.startsWith('前言第一段'), 'HTML→MD：第一段保留（没被「从第一个标题截断」吞掉）', JSON.stringify(hmMd).slice(0, 160));
+    ok(hmMd.includes('![湖面](photo:1)'), 'HTML→MD：.rt-img 转成独立成行的 photo:1 图片', hmMd);
+    ok(hmMd.includes('## 第二天') && hmMd.includes('**重点**'), 'HTML→MD：标题/加粗照常');
+    ok(!/340 KB|1200×800|rt-cap/.test(hmMd), 'HTML→MD：尺寸标注（rt-cap）绝不漏进 PDF/PNG', JSON.stringify(hmMd).slice(0, 200));
+
+    // 富文本净化（卫生措施）
+    const { sanitizeJournalHtml } = require3(path.join(ROOT, 'server', 'services', 'htmlSanitize.js'));
+    const dirty = '<p onclick="x()">hi<script>alert(1)</script>'
+      + '<a href="javascript:alert(1)">点我</a><img src="data:image/png;base64,AAAA">'
+      + '<span class="rt-img" data-photo="2" data-w="50"><img src="photo:2" alt="t"></span></p>';
+    const clean = sanitizeJournalHtml(dirty);
+    ok(!/<script|onclick|javascript:|data:image/i.test(clean),
+      '净化：script/onclick/javascript:/data:image 全清掉', clean);
+    ok(clean.includes('data-photo="2"') && clean.includes('data-w="50"') && clean.includes('class="rt-img"'),
+      '净化：照片引用属性（class/data-photo/data-w）保留', clean);
   }
 
   // ---- 动态线路（v1.7.0）：线路不再白名单——新线路名直接入库、可改可查 ----
@@ -848,10 +1004,25 @@ try {
   r = await req(`/api/journals/${jid}/photos`, { method: 'POST', token: u1, body: { data_url: png1x1, spot: '西湖' } });
   ok(r.status === 200 && r.j.photo && r.j.photo.sort === 1, '上传 PNG 照片（sort=1）', JSON.stringify(r.j).slice(0, 200));
   const pid1 = r.j.photo.id;
+  ok(r.j.photo.width === 1 && r.j.photo.height === 1 && r.j.photo.bytes > 0,
+    '上传回包带像素尺寸与体积（1×1、bytes>0）', JSON.stringify(r.j.photo));
   // 声明 png 实为 JPEG 字节 → magic byte 拦下
   const jpgAsPng = 'data:image/png;base64,' + Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0]).toString('base64');
   r = await req(`/api/journals/${jid}/photos`, { method: 'POST', token: u1, body: { data_url: jpgAsPng } });
   ok(r.status === 400, '伪造扩展名照片 400（magic byte 校验）');
+  // v1.12.0：WEBP 也校验 magic；能过 magic 但读不出尺寸 → 400（坏文件不落库）
+  const webp1x1 = 'data:image/webp;base64,UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==';
+  r = await req(`/api/journals/${jid}/photos`, { method: 'POST', token: u1, body: { data_url: webp1x1, spot: '灵隐寺' } });
+  ok(r.status === 200 && r.j.photo.width === 1 && r.j.photo.height === 1 && r.j.photo.sort === 2,
+    '上传 WEBP 1×1：magic 与尺寸都读对（sort=2）', JSON.stringify(r.j.photo));
+  const wpid = r.j.photo && r.j.photo.id;
+  if (wpid) await req(`/api/journals/${jid}/photos/${wpid}`, { method: 'DELETE', token: u1 }); // 立刻删掉：别影响后面「第二张 sort=2」
+  const notWebp = 'data:image/webp;base64,' + Buffer.alloc(32, 0x5a).toString('base64');
+  r = await req(`/api/journals/${jid}/photos`, { method: 'POST', token: u1, body: { data_url: notWebp } });
+  ok(r.status === 400, '伪造 WEBP（无 RIFF/WEBP 头）400', `status=${r.status} body=${(r.text || '').slice(0, 120)}`);
+  const fakeWebp = Buffer.alloc(40); fakeWebp.write('RIFF', 0, 'latin1'); fakeWebp.write('WEBX', 8, 'latin1');
+  r = await req(`/api/journals/${jid}/photos`, { method: 'POST', token: u1, body: { data_url: 'data:image/webp;base64,' + fakeWebp.toString('base64') } });
+  ok(r.status === 400, 'RIFF 但 chunk 不是 WEBP 的假文件 400', `status=${r.status}`);
   // 超 8MB → 拒
   const big = Buffer.alloc(8 * 1024 * 1024 + 16, 7); big[0] = 0x89; big[1] = 0x50; big[2] = 0x4e; big[3] = 0x47;
   r = await req(`/api/journals/${jid}/photos`, { method: 'POST', token: u1, body: { data_url: 'data:image/png;base64,' + big.toString('base64') } });
@@ -898,6 +1069,8 @@ try {
   ok(jd.title && jd.title.length <= 20, `AI 标题 ≤20 字（「${jd.title}」）`);
   ok(jd.subtitle.includes('杭州') && jd.subtitle.includes('4'), '副标题带出行基础信息（目的地+天数）');
   ok(jd.cover_photo_id === pid1, '未手选封面 → 自动随机选一（本例唯一一张）');
+  ok(jd.photos[0].width === 1 && jd.photos[0].height === 1 && jd.photos[0].bytes > 0,
+    '详情接口的照片行带尺寸/体积（编辑器标「1200×800 · 340 KB」用）', JSON.stringify(jd.photos[0]));
   ok(jd.model === 'stub', '桩模式 model=stub（诚实披露）');
 
   // 二次编辑 / 标题 / 封面 / 配色
@@ -958,6 +1131,8 @@ try {
   r = await req(`/api/journals/${jid}/photos/order`, { method: 'PUT', token: u1, body: { ids: [pid2, pid1] } });
   ok(r.status === 200 && r.j.photos[0].id === pid2 && r.j.photos[0].sort === 1 && r.j.photos[1].sort === 2,
     '换序后按新顺序重编 1..N（前台 photo:N 跟着变）', JSON.stringify(r.j.photos));
+  ok(r.j.photos.every((p) => p.width === 1 && p.height === 1 && p.bytes > 0),
+    '排序回包的照片行也带尺寸/体积（前端照片条直接显示）', JSON.stringify(r.j.photos.map((p) => [p.width, p.height, p.bytes])));
   r = await req(`/api/journals/${jid2}/photos/order`, { method: 'PUT', token: u2, body: { ids: [pid1, pid2] } });
   ok(r.status === 400, '排序不能跨篇（他人照片 id 进自己篇 400）');
 
@@ -1020,6 +1195,33 @@ try {
     ok(r.status === 409, '未完成的游记导 PDF 409');
   } else {
     console.log('  ⚠️ 无中文字体，游记 PDF 断言跳过');
+  }
+
+  // v1.12.0：富文本正文（存 HTML）——脏 HTML 入库前净化、回读、再用它导出 PDF
+  // （上面那组 PDF 断言跑的是 Markdown 正文，这一组跑 HTML；两种格式都要能导出）
+  console.log('== 游记富文本（HTML 正文）与导出（v1.12.0） ==');
+  const htmlBody = '<p>第一段要在：这段绝不能被「从第一个标题截断」吞掉。</p>'
+    + '<p onclick="alert(1)">小图：<img src="photo:1" alt="湖面"></p>'
+    + '<script>alert(2)</script>'
+    + '<h2>第二天</h2><p>正文<strong>重点</strong></p>'
+    + '<span class="rt-img" data-photo="1" data-w="75"><img src="photo:1" alt="湖面"></span>';
+  r = await req(`/api/journals/${jid}`, { method: 'PUT', token: u1, body: { content: htmlBody } });
+  const hc = (r.j.journal && r.j.journal.content) || '';
+  ok(r.status === 200 && hc.trim().startsWith('<p>'),
+    'PUT HTML 正文：原样存成 HTML（回读首字符是 <）', JSON.stringify(hc).slice(0, 160));
+  ok(!/<script|onclick=/i.test(hc), '入库前净化：script / onclick 不落库', hc.slice(0, 200));
+  ok(hc.includes('第一段要在') && hc.includes('<h2>第二天</h2>') && hc.includes('data-photo="1"') && hc.includes('data-w="75"'),
+    '净化保留正文与照片引用属性（class/data-photo/data-w）');
+  r = await req(`/api/journals/${jid}`, { token: u1 });
+  ok(r.j.journal.content === hc, 'HTML 正文刷新后原样（不是每次读都重算）');
+  if (fontsAvail) {
+    r = await req(`/api/journals/${jid}/pdf?mode=a4`, { token: u1 });
+    ok(r.status === 200 && r.text.startsWith('%PDF') && r.text.length > 5000,
+      'HTML 正文也能导 PDF·A4（服务端先转 Markdown）', `status=${r.status} len=${r.text.length}`);
+    r = await req(`/api/journals/${jid}/pdf?mode=long`, { token: u1 });
+    ok(r.status === 200 && r.text.startsWith('%PDF') && r.text.length > 5000, 'HTML 正文也能导 PDF·长图');
+  } else {
+    console.log('  ⚠️ 无中文字体，HTML 正文 PDF 断言跳过（PUT/净化/回读已断言）');
   }
 
   // 删除：照片一并清

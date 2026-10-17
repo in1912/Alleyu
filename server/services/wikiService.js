@@ -41,6 +41,23 @@ if (process.env.ALLEYU_WIKI_ORIGINS && !ENV_ORIGINS.length) {
 const SITES = ENV_ORIGINS.length ? ENV_ORIGINS : DEFAULT_SITES;
 const TIMEOUT_MS = Number(process.env.ALLEYU_WIKI_TIMEOUT_MS) || 6000;
 
+// v1.12.0 分站开关：设置页里「维基旅行」「维基百科」各一个勾选，未勾的站点一个请求都不发。
+// 本模块仍然**不 require db**（自检进程内直接 require 它）——由路由把 kinds 传进来。
+// 站点分类：优先看 origin/label 关键字；认不出（自检把两家都指向 127.0.0.1）时按站点下标兜底。
+function siteKind(site, idx = -1) {
+  const hay = `${(site && site.origin) || ''} ${(site && site.label) || ''}`.toLowerCase();
+  if (hay.includes('wikivoyage') || String((site && site.label) || '').includes('旅行')) return 'voyage';
+  if (hay.includes('wikipedia') || String((site && site.label) || '').includes('百科')) return 'pedia';
+  if (idx === 0) return 'voyage';
+  if (idx === 1) return 'pedia';
+  return 'other';
+}
+// kinds 不是数组 = 不过滤（老行为）；是数组 = 只留这些类型；空数组 = 一家都不发。
+function selectSites(kinds) {
+  if (!Array.isArray(kinds)) return SITES;
+  return SITES.filter((s, i) => kinds.includes(siteKind(s, i)));
+}
+
 // 串行节流（对 wiki 服务器客气点，200ms 足够）
 let _lastCall = 0;
 async function throttle() {
@@ -101,10 +118,13 @@ async function querySite(site, title, timeoutMs = TIMEOUT_MS) {
 async function fetchIntroEx(title, opts = {}) {
   const name = String(title || '').trim();
   if (!name) return { hit: null, netFail: false };
+  const list = selectSites(opts.sites);
+  // 一家都没开：不发任何请求，也不算「连不上」（那是未启用，不是网络现实）
+  if (!list.length) return { hit: null, netFail: false };
   if (process.env.ALLEYU_WIKI_OFFLINE === '1') throw new Error('维基介绍抓取已被 ALLEYU_WIKI_OFFLINE 关闭（离线自检模式）');
   const timeoutMs = Number(opts.timeoutMs) || TIMEOUT_MS;
   let allNetFail = true;
-  for (const site of SITES) {
+  for (const site of list) {
     let got;
     try {
       got = await querySite(site, name, timeoutMs);
@@ -128,14 +148,15 @@ async function fetchIntro(title, opts) {
 // 离线自检模式下不打真网，直接如实回「离线模式」。
 async function probeSites(title = '故宫博物院', opts = {}) {
   const timeoutMs = Number(opts.timeoutMs) || TIMEOUT_MS;
+  const list = selectSites(opts.sites);
   if (process.env.ALLEYU_WIKI_OFFLINE === '1') {
     return {
       reachable: false, offline: true, timeout_ms: timeoutMs,
-      sites: SITES.map((s) => ({ label: s.label, origin: s.origin, ok: false, ms: 0, error: '离线自检模式（ALLEYU_WIKI_OFFLINE=1），没有打真网' })),
+      sites: list.map((s) => ({ label: s.label, origin: s.origin, ok: false, ms: 0, error: '离线自检模式（ALLEYU_WIKI_OFFLINE=1），没有打真网' })),
     };
   }
   const sites = [];
-  for (const site of SITES) {
+  for (const site of list) {
     const t0 = Date.now();
     let ok = false;
     let error = '';
@@ -149,4 +170,4 @@ async function probeSites(title = '故宫博物院', opts = {}) {
   return { reachable: sites.some((s) => s.ok), offline: false, timeout_ms: timeoutMs, sites };
 }
 
-module.exports = { fetchIntro, fetchIntroEx, probeSites, SITES };
+module.exports = { fetchIntro, fetchIntroEx, probeSites, siteKind, selectSites, SITES };

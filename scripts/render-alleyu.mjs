@@ -337,13 +337,31 @@ if (done && done.status === 'done') {
   // 拿局域网 IP / localhost 打开后台时，复制出去的链接别人打不开 → 管理员可配死域名。
   const ahSet = { Authorization: 'Bearer ' + tk, 'Content-Type': 'application/json' };
   const setBefore = await fetch(URL_BASE + '/api/settings', { headers: ahSet }).then((r) => r.json());
-  await fetch(URL_BASE + '/api/settings', { method: 'PUT', headers: ahSet, body: JSON.stringify({ public_base_url: 'http://alleyu.in1912.cn' }) });
+  const putBase = await fetch(URL_BASE + '/api/settings', { method: 'PUT', headers: ahSet, body: JSON.stringify({ public_base_url: 'http://alleyu.in1912.cn' }) });
+  ok(putBase.status === 200, `设置「公开访问地址」成功（HTTP ${putBase.status}）`);
+  const setNow = await fetch(URL_BASE + '/api/settings', { headers: ahSet }).then((r) => r.json());
+  ok(setNow.public_base_url === 'http://alleyu.in1912.cn', `库里真的存上了公开访问地址（${setNow.public_base_url || '空'}）`);
   await page.locator('.dlg button').filter({ hasText: '关闭' }).click();
+  ok((await page.locator('.mask').count()) === 0, '分享对话框已关闭（只有重新打开才会用新域名拼链接）');
   await page.goto(URL_BASE + '/#/guide/' + genRes.id);
   await page.waitForSelector('.gv-head button', { timeout: 8000 });
-  await page.locator('.gv-head button').filter({ hasText: '分享' }).click();
+  const [meResp] = await Promise.all([
+    page.waitForResponse((x) => /\/api\/auth\/me$/.test(x.url()), { timeout: 8000 }).catch(() => null),
+    page.locator('.gv-head button').filter({ hasText: '分享' }).click(),
+  ]);
+  ok(!!meResp, '打开分享对话框时真的重新读了 /auth/me（不是吃缓存/复用旧列表）');
+  if (meResp) {
+    const mj = await meResp.json().catch(() => ({}));
+    ok(mj.share_base === 'http://alleyu.in1912.cn', `分享对话框读到的 share_base 是新值（${mj.share_base || '空'}）`);
+  }
   await page.waitForSelector('.share-row', { timeout: 6000 });
   const basedUrl = (await page.locator('.share-row .share-url').first().innerText()).trim();
+  const pageBase = await page.evaluate(async () => {
+    const t = localStorage.getItem('alleyu_token');
+    const r = await fetch('/api/auth/me', { headers: { Authorization: 'Bearer ' + t }, cache: 'no-store' });
+    return (await r.json()).share_base;
+  });
+  ok(pageBase === 'http://alleyu.in1912.cn', `页面里现读到的 share_base 是最新值（${pageBase || '空'}）`);
   ok(basedUrl.startsWith('http://alleyu.in1912.cn/#/s/'), `配了公开访问地址 → 链接照它拼（${basedUrl.slice(0, 42)}…）`);
   ok((await page.locator('.share-row a').filter({ hasText: '打开' }).first().getAttribute('href')) === basedUrl, '链接行「打开」按钮指向同一地址（点开就能验证链接通不通）');
   await fetch(URL_BASE + '/api/settings', { method: 'PUT', headers: ahSet, body: JSON.stringify({ public_base_url: setBefore.public_base_url || '' }) });
@@ -413,13 +431,41 @@ for (const [hash, sel, name] of [
   }
 }
 
-// v1.6.0 起设置页无「我的 AI」；v1.10.0 加「邀请码」，v1.11.0 加「升级」
+// v1.6.0 起设置页无「我的 AI」；v1.10.0 加「邀请码」，v1.11.0 加「升级」，v1.12.0 加「维基与补全」
 await page.goto(URL_BASE + '/#/settings');
 await page.waitForSelector('.tabs .t', { timeout: 6000 });
 const setTabs = await page.locator('.tabs .t').allInnerTexts();
-ok(setTabs.length === 4 && !setTabs.some((t) => t.includes('我的 AI')), '设置页四页签（AI 全局/邀请码/升级/系统，个人配置与改密码已下线）');
-ok(setTabs.some((t) => t.includes('邀请码')), '四页签里有「邀请码」（v1.10.0 新增）');
-ok(setTabs.some((t) => t.includes('升级')), '四页签里有「升级」（v1.11.0 新增）');
+ok(setTabs.length === 5 && !setTabs.some((t) => t.includes('我的 AI')), '设置页五页签（AI 全局/邀请码/升级/系统/维基与补全）');
+ok(setTabs.some((t) => t.includes('邀请码')), '五页签里有「邀请码」（v1.10.0 新增）');
+ok(setTabs.some((t) => t.includes('升级')), '五页签里有「升级」（v1.11.0 新增）');
+ok(setTabs.some((t) => t.includes('维基与补全')), '五页签里有「维基与补全」（v1.12.0 新增）');
+
+// ---- v1.12.0：维基与补全页签（两家各一个开关 + 各自「测试连接」，未勾选也允许先测） ----
+await page.locator('.tabs .t').filter({ hasText: '维基与补全' }).click();
+await page.waitForSelector('.wiki-row', { timeout: 6000 });
+const wikiChecks = page.locator('.wiki-row input[type=checkbox]');
+ok((await wikiChecks.count()) === 2, '维基与补全：两家站点各一个复选框');
+const wikiLabels = (await page.locator('.wiki-row').allInnerTexts()).join(' ');
+ok(/维基旅行/.test(wikiLabels) && /维基百科/.test(wikiLabels), '两个复选框分别标明 维基旅行 / 维基百科');
+const wikiTestBtns = page.locator('.wiki-row button').filter({ hasText: '测试连接' });
+ok((await wikiTestBtns.count()) === 2, '每家站点各有「测试连接」按钮');
+// 逐家点（探针只读连通性、不写库）；只断言「12 秒内必出结论」，不预设通或不通。
+// ⚠️ 绝不点「保存维基设置」：render 跑在真实库上，那会改掉管理员已配好的开关。
+for (let i = 0; i < 2; i++) {
+  const t0 = Date.now();
+  await wikiTestBtns.nth(i).click();
+  let done = false;
+  while (!done && Date.now() - t0 < 12000) {
+    await page.waitForTimeout(200);
+    const res = page.locator('.wiki-row').nth(i).locator('.ok-text, .err-text');
+    if ((await res.count()) > 0) {
+      const txt = (await res.first().innerText({ timeout: 1500 }).catch(() => '')).trim();
+      if (/可达|连不上|未配置|离线|超时/.test(txt)) done = true;
+    }
+  }
+  ok(done, `第 ${i + 1} 家「测试连接」${((Date.now() - t0) / 1000).toFixed(1)}s 内给出结论`);
+}
+await page.screenshot({ path: path.join(IMG_DIR, '维基与补全.png'), fullPage: false });
 
 // ---- v1.11.0 管理员在线升级页（**只预检，绝不点应用**） ----
 // ⚠️ 这段跑在**真实仓库根**上（render 的服务器没改 ALLEYU_UPGRADE_ROOT）——这正是它的价值：
@@ -564,12 +610,13 @@ const rows50 = await page.locator('.tb tbody tr').count();
 ok(rows50 === 50, `每页 50 切换生效（实际 ${rows50}）`);
 const introHeads = await page.locator('.tb thead th').allInnerTexts();
 ok(introHeads.some((h) => h.includes('介绍')) && introHeads.some((h) => h.includes('城市')), '表格带介绍列与城市列');
-// v1.10.1：批量补全只挑「零景点」城市——按钮 title 与页脚说明都要写明「跳过」
+// v1.12.0：批量补全从「零景点」改成「景点数少于 N」（N 默认 6，可在设置里改）——title 与页脚都要写明
 const bfAllBtn = page.locator('button', { hasText: '补全全部缺景点城市' });
 ok((await bfAllBtn.count()) === 1, '景点页签有「补全全部缺景点城市」按钮');
-ok(/跳过/.test((await bfAllBtn.first().getAttribute('title')) || ''), '批量补全按钮标题写明「已有景点的城市一律跳过」');
+const bfTitle = (await bfAllBtn.first().getAttribute('title')) || '';
+ok(/少于 6/.test(bfTitle) && /跳过/.test(bfTitle), '批量补全按钮标题写明「景点数少于 6」与「已有景点跳过」', bfTitle.slice(0, 80));
 const libTail = await page.locator('.card .hint').last().innerText();
-ok(/一个景点都没有/.test(libTail) && /跳过/.test(libTail), '页脚说明写明只补「一个景点都没有」的城市、已有景点的一律跳过');
+ok(/少于 6/.test(libTail) && /跳过/.test(libTail), '页脚说明写明只补「景点数少于 6」的国内城市、已有景点的一律跳过', libTail.slice(0, 120));
 await page.screenshot({ path: path.join(IMG_DIR, '城市景点库-景点.png'), fullPage: false });
 
 // v1.11.1：只读的「🔌 测试维基连通」——「介绍补不上」到底是连不上还是真没条目，一点就知道。
@@ -622,13 +669,15 @@ if (cards > 0) {
 
 // ---- v1.8.0 游记整理：侧栏入口 + 向导 UI 全流程 + 详情（封面/配色/编辑/导出） ----
 console.log('== v1.8.0 游记整理 ==');
-// 侧栏入口在「我的攻略」下方
-const jNav = page.locator('.side .nav-item').filter({ hasText: '游记整理' });
-ok((await jNav.count()) === 1, '侧栏「游记整理」入口存在');
+// 侧栏入口在「我的攻略」下方（v1.12.0 改名：游记整理 → 生成游记）
+const jNav = page.locator('.side .nav-item').filter({ hasText: '生成游记' });
+ok((await jNav.count()) === 1, '侧栏「生成游记」入口存在（原「游记整理」）');
 await jNav.click();
 await page.waitForURL('**/#/journals', { timeout: 8000 });
-await page.waitForSelector('.tb', { timeout: 6000 });
-ok(true, '游记列表页渲染');
+await page.waitForSelector('.grid3, .empty', { timeout: 6000 });
+ok(true, '游记列表页渲染（方框卡片，不再是表格）');
+ok((await page.locator('.tb').count()) === 0, '游记列表没有表格（v1.12.0 改成卡片）');
+ok((await page.locator('.gv-head').innerText()).includes('生成游记'), '列表页标题是「生成游记」');
 const newBtn = page.locator('button').filter({ hasText: '写游记（引导式）' });
 ok((await newBtn.count()) === 1, '列表页「＋写游记」按钮');
 
@@ -738,13 +787,69 @@ const routeTxt = routeAppear ? (await page.locator('.route-card').innerText()).r
 const routeImg = routeAppear && (await page.locator('.route-img').count()) === 1;
 ok(routeImg || /没画出连线/.test(routeTxt), routeImg ? `路线图出图 + 文字摘要（${routeTxt.slice(0, 70)}）` : `路线不可用时如实说明（${routeTxt.slice(0, 70)}）`);
 await page.screenshot({ path: path.join(IMG_DIR, '游记-详情.png'), fullPage: false });
-// 二次编辑：自动保存 → 保存一版 → 恢复原版 → 恢复一版
+// v1.12.0：编辑前先导一次 PNG——此时正文还是 Markdown（覆盖旧管线），编辑后再导一次覆盖 HTML 管线
+{
+  const pngBeforeP = page.waitForEvent('download', { timeout: 20000 });
+  await page.locator('.jd-head button').filter({ hasText: '导出PNG' }).click();
+  const pngBefore = await pngBeforeP;
+  ok(pngBefore.suggestedFilename().endsWith('.png'), '编辑前（Markdown 正文）导出 PNG 成功（' + pngBefore.suggestedFilename() + '）');
+}
+
+// 二次编辑（v1.12.0 富文本）：contenteditable + 工具栏，正文图片直接显示
 await page.locator('.jd-head button').filter({ hasText: '编辑' }).click();
-await page.waitForSelector('.editarea', { timeout: 6000 });
+await page.waitForSelector('.rt-editor', { timeout: 6000 });
+const rtImgs0 = await page.locator('.rt-editor .rt-img').count();
+ok(rtImgs0 >= 1, `富文本编辑器直接显示正文图片（${rtImgs0} 张，不再是 ![](photo:N) 文本）`);
+const cap0 = (await page.locator('.rt-editor .rt-cap').first().innerText()).trim();
+ok(/1×1/.test(cap0) && /(KB|B)/.test(cap0), `图片下方标注像素尺寸与体积（${cap0}）`);
+ok((await page.locator('.rt-tools .rtb').count()) >= 6, '富文本工具栏（H2/H3/加粗/斜体/列表/引用/插图/撤销）');
+
 const jMarker = '游记编辑标记RenderE2E';
-await page.locator('.editarea').evaluate((el, m) => { el.value += '\n\n## ' + m + '\n'; el.dispatchEvent(new Event('input', { bubbles: true })); }, jMarker);
+await page.locator('.rt-editor').evaluate((el, m) => {
+  el.focus();
+  const r = document.createRange();
+  r.selectNodeContents(el);
+  r.collapse(false);
+  const s = window.getSelection();
+  s.removeAllRanges();
+  s.addRange(r);
+  document.execCommand('insertHTML', false, '<h2>' + m + '</h2><p>富文本里加的一段。</p>');
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+}, jMarker);
 await page.waitForFunction(() => /已自动保存/.test((document.querySelector('.pb-btns') || {}).innerText || ''), null, { timeout: 10000 });
 ok(true, '编辑自动保存（防抖 1.2s 后自己落库，不点按钮）');
+const savedJ = await fetch(URL_BASE + '/api/journals/' + jidCreated, { headers: { Authorization: 'Bearer ' + tk } })
+  .then((x) => x.json()).catch(() => ({}));
+const savedContent = (savedJ.journal && savedJ.journal.content) || '';
+ok(savedContent.trim().startsWith('<') && savedContent.includes(jMarker),
+  '自动保存落库的是 HTML（content 首字符 <）——用户拍板「改存 HTML」', savedContent.slice(0, 80));
+ok(/data-photo="\d+"/.test(savedContent) && !/\/photos\/\d+\/file/.test(savedContent),
+  '入库的图片引用是 photo:N（带 token 的 URL 绝不落库）', savedContent.slice(0, 200));
+
+// 插图来源一：从游记已上传的照片里选，并按 75% 显示
+const imgCount1 = await page.locator('.rt-editor .rt-img').count();
+await page.locator('.rt-tools button').filter({ hasText: '插图' }).click();
+await page.waitForSelector('.img-dlg .pick', { timeout: 6000 });
+await page.locator('.w-row button').filter({ hasText: '75%' }).click();
+const pickMeta = (await page.locator('.img-dlg .pick .pk-meta').first().innerText()).trim();
+ok(/1×1/.test(pickMeta), `照片选择器列出已上传照片与尺寸（${pickMeta}）`);
+await page.locator('.img-dlg .pick').first().click();
+await page.waitForFunction((n) => document.querySelectorAll('.rt-editor .rt-img').length > n, imgCount1, { timeout: 6000 });
+ok(true, '从已上传照片插入：编辑区多出一张图');
+ok((await page.locator('.rt-editor .rt-img').last().getAttribute('data-w')) === '75',
+  '选定 75% 后插入的图片带 data-w=75（可调显示宽度）');
+
+// 插图来源二：从本机/手机现传一张 1×1 PNG（沿用现有 base64 上传通道）
+const imgCount2 = await page.locator('.rt-editor .rt-img').count();
+await page.locator('.rt-tools button').filter({ hasText: '插图' }).click();
+await page.waitForSelector('.img-dlg', { timeout: 6000 });
+await page.locator('.img-tabs button').filter({ hasText: '本机/手机' }).click();
+await page.locator('.img-dlg input[type=file]').setInputFiles(tmpPng);
+await page.waitForFunction((n) => document.querySelectorAll('.rt-editor .rt-img').length > n, imgCount2, { timeout: 12000 });
+const rtCaps = await page.locator('.rt-editor .rt-cap').allInnerTexts();
+ok(rtCaps.some((t) => /1×1/.test(t)), '从本机上传的图也立刻显示并标注尺寸');
+await page.screenshot({ path: path.join(IMG_DIR, '游记-富文本编辑.png'), fullPage: false });
+
 await page.locator('.pb-bar button').filter({ hasText: '保存一版' }).click();
 await page.waitForFunction(() => /已保存一版/.test((document.querySelector('.pb-btns') || {}).innerText || ''), null, { timeout: 10000 });
 ok(true, '【保存一版】把手动版单独留档（旧名「保存修改」）');
@@ -752,29 +857,31 @@ ok(await page.locator('.pb-bar button').filter({ hasText: '恢复一版' }).isEn
 ok(await page.locator('.pb-bar button').filter({ hasText: '恢复原版' }).isEnabled(), '【恢复原版】可用（系统生成版已留档）');
 page.once('dialog', (d) => d.accept());
 await page.locator('.pb-bar button').filter({ hasText: '恢复原版' }).click();
-await page.waitForFunction((m) => !document.querySelector('.editarea').value.includes(m), jMarker, { timeout: 10000 });
+await page.waitForFunction((m) => !document.querySelector('.rt-editor').innerText.includes(m), jMarker, { timeout: 10000 });
 ok(true, '【恢复原版】回到系统自动生成的那一份（编辑标记消失）');
 page.once('dialog', (d) => d.accept());
 await page.locator('.pb-bar button').filter({ hasText: '恢复一版' }).click();
-await page.waitForFunction((m) => document.querySelector('.editarea').value.includes(m), jMarker, { timeout: 10000 });
+await page.waitForFunction((m) => document.querySelector('.rt-editor').innerText.includes(m), jMarker, { timeout: 10000 });
 ok(true, '【恢复一版】回到手动保存的那一份（编辑标记回来）');
 await page.locator('.pb-bar button').filter({ hasText: '取消' }).click();
 await page.waitForSelector('.jr-md', { timeout: 6000 });
 ok((await page.locator('.jr-md').innerText()).includes(jMarker), '取消编辑后正文即时更新');
-// 导出三件：PNG（canvas）+ PDF A4 + PDF 长图
+ok((await page.locator('.jr-md .rt-img').count()) >= 1, '只读态正文图片照常显示（不显示尺寸标注）');
+
+// 导出三件（此时正文是 HTML）：PNG（canvas）+ PDF A4 + PDF 长图
 const pngDlP = page.waitForEvent('download', { timeout: 20000 });
 await page.locator('.jd-head button').filter({ hasText: '导出PNG' }).click();
 const pngDl = await pngDlP;
-ok(pngDl.suggestedFilename().endsWith('.png'), '导出 PNG 长图直接下载（' + pngDl.suggestedFilename() + '）');
+ok(pngDl.suggestedFilename().endsWith('.png'), 'HTML 正文导出 PNG 长图直接下载（' + pngDl.suggestedFilename() + '）');
 if (FONTS_OK) {
   const a4DlP = page.waitForEvent('download', { timeout: 25000 });
   await page.locator('.jd-head button').filter({ hasText: 'PDF·A4打印' }).click();
   const a4Dl = await a4DlP;
-  ok(a4Dl.suggestedFilename().endsWith('.pdf') && /A4/.test(a4Dl.suggestedFilename()), '导出 PDF·A4（文件名含 A4）');
+  ok(a4Dl.suggestedFilename().endsWith('.pdf') && /A4/.test(a4Dl.suggestedFilename()), 'HTML 正文导出 PDF·A4（文件名含 A4）');
   const longDlP = page.waitForEvent('download', { timeout: 25000 });
   await page.locator('.jd-head button').filter({ hasText: 'PDF·长图分享' }).click();
   const longDl = await longDlP;
-  ok(longDl.suggestedFilename().endsWith('.pdf') && /长图/.test(longDl.suggestedFilename()), '导出 PDF·长图（文件名含 长图）');
+  ok(longDl.suggestedFilename().endsWith('.pdf') && /长图/.test(longDl.suggestedFilename()), 'HTML 正文导出 PDF·长图（文件名含 长图）');
 }
 // v1.9.0 需求 10：成稿后的右上角不是「重新跑一遍提示词」，而是回引导模式改答案再走一遍
 ok((await page.locator('.jd-head button').filter({ hasText: '重新生成' }).count()) === 0, '成稿后不再有「重新生成」（不会原地重跑 AI）');
@@ -790,8 +897,9 @@ ok((await page.locator('.steps-bar .st').count()) === 14, '回引导后仍在 14
 // 列表回看 + 清理（render 桩服务器共用真实 data/，测完删掉这篇）
 await page.goto(URL_BASE + '/#/journals');
 await page.waitForTimeout(800);
-const jRow = page.locator('.tb td').filter({ hasText: jTitle });
-ok((await jRow.count()) >= 1, '游记列表出现刚生成的一篇');
+const jRow = page.locator('.gcard').filter({ hasText: jTitle });
+ok((await jRow.count()) >= 1, '游记列表出现刚生成的一篇（方框卡片）');
+ok((await page.locator('.gv-head button').filter({ hasText: '写游记（引导式）' }).count()) === 1, '卡片列表页仍有「＋ 写游记（引导式）」');
 await page.screenshot({ path: path.join(IMG_DIR, '游记-列表.png'), fullPage: false });
 if (jidCreated) {
   const del = await fetch(URL_BASE + '/api/journals/' + jidCreated, { method: 'DELETE', headers: { Authorization: 'Bearer ' + tk } });
@@ -819,23 +927,27 @@ await page.locator('.tabs .t').filter({ hasText: '邀请码' }).click();
 await page.waitForSelector('.grid3 input[type=number]', { timeout: 6000 });
 await page.locator('button').filter({ hasText: '一次性码' }).click();
 await page.fill('.grid3 input[placeholder^="例如：给老王"]', INV_NOTE);
-await page.locator('button').filter({ hasText: '生成邀请码' }).click();
-// ⚠️ 别拿 `.tb tbody tr` 的 .first() 当自己那行：真实库里可能已经有用户自己的邀请码，
-//    列表在 POST 回包前就渲染好了，`waitForSelector('.tb tbody tr td b')` 会立刻命中**旧行**，
-//    于是读到——并在收尾按码反查 id 时**删掉**——别人的邀请码。认准自己填的那条备注。
-//    （v1.10.1 自检真踩过：删掉了真实库里一个 500 次的老码，靠 sqlite 回收页把原值捞回来才复原。）
-const invRow = page.locator('.tb tbody tr').filter({ hasText: INV_NOTE }).first();
+// ⚠️ 别拿列表顺序/备注当自己那行的唯一凭据：真实库里可能已经有用户自己的邀请码、
+//    也可能有**上次崩溃留下的同备注旧行**；列表还会在 POST 回包前就渲染。唯一可信的是
+//    **本次 POST 的回包**（codes + invites 带 id）。读到后按码精确找行。
+//    （v1.10.1 自检真踩过：认列表第一行删掉了真实库一个 500 次的老码，靠 sqlite 回收页才捞回。）
+const [invResp] = await Promise.all([
+  page.waitForResponse((x) => /\/api\/invites$/.test(x.url()) && x.request().method() === 'POST', { timeout: 10000 }),
+  page.locator('button').filter({ hasText: '生成邀请码' }).click(),
+]);
+const invJson = await invResp.json().catch(() => ({}));
+const inviteCode = String((invJson.codes || [])[0] || '');
+rInviteId = Number(((invJson.invites || [])[0] || {}).id) || 0;
+ok(/^[A-HJ-NP-Z2-9]{8}$/.test(inviteCode) && rInviteId > 0, `生成 8 位邀请码（字母表去过易混字符）：${inviteCode}`);
+const invRow = page.locator('.tb tbody tr').filter({ hasText: inviteCode }).first();
 await invRow.waitFor({ timeout: 8000 });
-const inviteCode = (await invRow.locator('td b').innerText()).trim();
-ok(/^[A-HJ-NP-Z2-9]{8}$/.test(inviteCode), `生成 8 位邀请码（字母表去过易混字符）：${inviteCode}`);
 const invTxt = (await invRow.innerText()).replace(/\s+/g, ' ');
 ok(/一次性/.test(invTxt) && /0 \/ 1/.test(invTxt) && new RegExp(INV_NOTE).test(invTxt), `列表显示 一次性 / 已用 0/1 / 备注（${invTxt.slice(0, 50)}）`);
 await page.screenshot({ path: path.join(IMG_DIR, '邀请码.png'), fullPage: false });
 const invList = await fetch(URL_BASE + '/api/invites', { headers: ah }).then((x) => x.json()).catch(() => ({ invites: [] }));
-// 按**自己那条备注**反查 id（不用码——码只是转手，真正独一无二的是备注）；顺带自证：查到的那行码必须与我读到的一致
-const mine = (invList.invites || []).find((x) => x.note === INV_NOTE);
-ok(!!mine && mine.code === inviteCode, '收尾定位到自己生成的邀请码（按备注反查，不会误删别人的码）');
-rInviteId = (mine || {}).id || 0;
+// 顺带自证：服务端按 id 反查到的行，码必须与我读到的一致
+const mine = (invList.invites || []).find((x) => x.id === rInviteId);
+ok(!!mine && mine.code === inviteCode, '收尾定位到自己生成的邀请码（认 POST 回包 id，不信列表顺序）');
 if (!rInviteId) console.log('  ⚠️ 没定位到自检码，真实库里可能留了一条备注为「' + INV_NOTE + '」的邀请码，请手工删');
 
 // v1.10.2：设置 → 系统 里的「公开访问地址」（分享链接域名）
@@ -884,15 +996,19 @@ await upage.waitForURL('**/#/', { timeout: 10000 });
 await upage.waitForSelector('.corner .who', { timeout: 8000 });
 ok((await upage.locator('.corner .who').innerText()).includes(rNick), '注册成功即登录（首页右上角显示昵称）');
 
-// 需求 6：普通用户看不到 城市景点库/设置/用户管理，多一个「我的账号」
+// 需求 6：普通用户看不到 城市景点库/设置/用户管理，多一个「我的」（v1.12.0 由「我的账号」改名）
 const ql = (await upage.locator('.quick-links a').allInnerTexts()).map((t) => t.trim());
 ok(!ql.some((t) => /城市景点库|设置|用户管理/.test(t)), `普通用户首页入口已去掉 城市景点库/设置/用户管理（${ql.length} 项）`);
-ok(ql.some((t) => t.includes('我的账号')), '普通用户首页多出「我的账号」入口');
+ok(ql.some((t) => /^👤\s*我的$/.test(t)), '普通用户首页多出「我的」入口（原「我的账号」）');
 await upage.goto(URL_BASE + '/#/account');
 await upage.waitForSelector('.side .nav-item', { timeout: 8000 });
 const uNav = (await upage.locator('.side .nav-item .txt').allInnerTexts()).map((t) => t.trim());
 ok(!uNav.some((t) => /设置|用户管理|城市景点库/.test(t)), `普通用户侧栏没有 设置/用户管理/城市景点库（${uNav.join(' / ')}）`);
-ok(uNav.includes('账号'), '普通用户侧栏有「账号」');
+ok(uNav.includes('我的'), '普通用户侧栏有「我的」（原「账号」）');
+ok((await upage.locator('h2').first().innerText()).includes('我的'), '账号页标题=「我的」');
+ok((await upage.locator('.acct-foot a').filter({ hasText: '回首页' }).count()) === 1
+  && (await upage.locator('.acct-foot a').filter({ hasText: '退出登录' }).count()) === 1,
+  '账号页底部有「回首页 / 退出登录」（手机端没有「更多」时的出口）');
 ok((await upage.locator('.card').first().innerText()).includes(rUser), '账号页只读显示用户名（登录凭据不可改）');
 
 // 需求 6：普通用户自己改昵称与密码
@@ -935,6 +1051,52 @@ await upage.waitForSelector('.wiz', { timeout: 8000 });
 await upage.waitForFunction(() => /游记剩余/.test(document.body.innerText), null, { timeout: 8000 });
 const jQuota = (await upage.locator('.nav-row').first().innerText()).replace(/\s+/g, '');
 ok(/游记剩余：1次/.test(jQuota), `写游记页给用户看剩余次数（${jQuota.slice(0, 40)}）`);
+
+// ---- v1.12.0：手机端底部浮栏（390×844，普通用户 + 管理员两组） ----
+// 复用上面这个已登录的普通用户，不新造账号；底栏四项必须是 <a>（button 会抢走
+// 页面里「生成攻略」按钮的 locator，见 CLAUDE.md）。
+console.log('== 手机端导航与游记卡片（v1.12.0） ==');
+await upage.setViewportSize({ width: 390, height: 844 });
+// 首页是整页布局（.full，没有侧栏也没有底栏），底栏只在「功能页」的 .shell 里出现
+await upage.goto(URL_BASE + '/#/history');
+await upage.waitForSelector('.m-nav a.m-item', { timeout: 8000 });
+ok(await upage.locator('.m-nav').isVisible(), '手机端（390 宽）底部浮栏可见');
+ok(!(await upage.locator('.side').isVisible().catch(() => false)), '手机端左侧栏隐藏');
+const mLabels = (await upage.locator('.m-nav a.m-item .mtxt').allInnerTexts()).map((t) => t.trim());
+ok(mLabels.length === 4 && mLabels.join('|') === '生成攻略|我的攻略|生成游记|我的', `手机底栏恰好四项：${mLabels.join(' / ')}`);
+ok((await upage.locator('.m-nav .m-more').count()) === 0, '普通用户手机端没有「更多」（管理员才有）');
+const padB = await upage.locator('.main').evaluate((el) => parseFloat(getComputedStyle(el).paddingBottom) || 0);
+ok(padB >= 60, `页面底部为浮栏留了位置（padding-bottom ${padB}px）`);
+await upage.locator('.m-nav a.m-item[href="#/journals"]').click();
+await upage.waitForURL('**/#/journals', { timeout: 8000 });
+await upage.waitForSelector('.grid3, .empty', { timeout: 8000 });
+ok((await upage.locator('.gv-head').innerText()).includes('生成游记'), '手机端点「生成游记」→ 生成游记页（标题已改名）');
+ok((await upage.locator('.tb').count()) === 0, '游记列表是方框卡片，没有表格（.tb 为 0）');
+await upage.locator('.m-nav a.m-item[href="#/account"]').click();
+await upage.waitForURL('**/#/account', { timeout: 8000 });
+await upage.waitForSelector('.acct-foot', { timeout: 8000 });
+ok((await upage.locator('h2').first().innerText()).includes('我的'), '手机端点「我的」→ 账号页（标题已改名）');
+await upage.screenshot({ path: path.join(IMG_DIR, 'mobile-我的游记.png'), fullPage: false });
+
+// 管理员手机端：多一个「更多」，浮层里收着其余页签
+const mctx = await browser.newContext({ viewport: { width: 390, height: 844 }, storageState: await page.context().storageState() });
+const mpage = await mctx.newPage();
+await mpage.goto(URL_BASE + '/#/history');
+await mpage.waitForSelector('.m-nav .m-more', { timeout: 10000 });
+ok(true, '管理员手机端底栏多出「更多」');
+await mpage.locator('.m-nav .m-more').click();
+await mpage.waitForSelector('.m-sheet', { timeout: 6000 });
+const sheetTxt = (await mpage.locator('.m-sheet').innerText()).replace(/\s+/g, ' ');
+ok(/城市景点库/.test(sheetTxt) && /用户管理/.test(sheetTxt) && /设置/.test(sheetTxt) && /回首页/.test(sheetTxt) && /退出登录/.test(sheetTxt),
+  `「更多」浮层含 城市景点库/用户管理/设置/回首页/退出登录（${sheetTxt.slice(0, 30)}）`);
+ok(!/生成攻略|我的攻略|生成游记/.test(sheetTxt), '「更多」浮层不重复底栏那四项');
+await mpage.locator('.m-sheet .m-sheet-item').filter({ hasText: '设置' }).click();
+await mpage.waitForURL('**/#/settings', { timeout: 8000 });
+await mpage.waitForSelector('.tabs .t', { timeout: 8000 });
+ok((await mpage.locator('.tabs .t').filter({ hasText: '维基与补全' }).count()) === 1, '手机端从「更多」进设置，能看到「维基与补全」页签');
+await mpage.screenshot({ path: path.join(IMG_DIR, 'mobile-设置.png'), fullPage: false });
+await mctx.close();
+
 await uctx.close();
 
 // 收尾：把 render 自己造的邀请码与用户从真实库里删掉（别留自检垃圾）

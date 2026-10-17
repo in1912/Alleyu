@@ -1,6 +1,6 @@
 <template>
   <div>
-    <h2 style="margin: 0 0 14px">👤 我的账号</h2>
+    <h2 style="margin: 0 0 14px">👤 我的</h2>
 
     <div class="card" style="max-width: 560px">
       <table class="tb">
@@ -69,13 +69,19 @@
         <span v-if="pwdMsg" :class="pwdOk ? 'ok-text' : 'err-text'" style="margin: 0">{{ pwdMsg }}</span>
       </div>
     </div>
+
+    <!-- v1.12.0：手机端普通用户没有「更多」浮层，回首页/退出放在这里 -->
+    <div class="acct-foot">
+      <a href="#/">← 回首页</a>
+      <a style="cursor: pointer" @click="logout">退出登录</a>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { onMounted, ref } from 'vue';
-import { api } from '../api/index.js';
-import { setSession } from '../stores/session.js';
+import { api, setToken } from '../api/index.js';
+import { setSession, clearSession } from '../stores/session.js';
 
 const emit = defineEmits(['refresh-me']);
 
@@ -118,5 +124,16 @@ async function savePwd() {
     oldPwd.value = ''; newPwd.value = '';
   } catch (e) { pwdOk.value = false; pwdMsg.value = e.message; } finally { busyPwd.value = false; }
 }
+async function logout() {
+  try { await api('/auth/logout', { method: 'POST' }); } catch { /* 忽略 */ }
+  setToken('');
+  clearSession(); // 不清共享缓存，路由守卫会拿着上一个账号的角色放行
+  location.hash = '#/login';
+}
 onMounted(load);
 </script>
+
+<style scoped>
+.acct-foot { max-width: 560px; display: flex; justify-content: center; gap: 22px; font-size: 13px; color: var(--mut); padding: 8px 0 4px; }
+.acct-foot a { color: var(--acc-d); }
+</style>

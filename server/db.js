@@ -235,6 +235,11 @@ addCol('attractions', 'rating', "TEXT NOT NULL DEFAULT ''");
 addCol('journals', 'content_original', "TEXT NOT NULL DEFAULT ''");
 addCol('journals', 'content_manual', "TEXT NOT NULL DEFAULT ''");
 addCol('journals', 'route_json', "TEXT NOT NULL DEFAULT ''");
+// v1.12.0 照片尺寸/体积：编辑页要「看到图片的大小」。上传时从文件头读出来落库；
+// 历史照片在首次打开该游记时懒补（GET /:id 里逐张算，不扫全库）。
+addCol('journal_photos', 'width', 'INTEGER NOT NULL DEFAULT 0');
+addCol('journal_photos', 'height', 'INTEGER NOT NULL DEFAULT 0');
+addCol('journal_photos', 'bytes', 'INTEGER NOT NULL DEFAULT 0');
 // v1.10.0：注册（邮箱）+ 生成配额 + 用量记账。users 表此前从没加过列，这组是第一次。
 //  配额语义：-1=跟随系统默认（settings 的 quota_default_*）/ -2=不限 / >=0=指定总额；已用只增不减（管理员可清零）。
 addCol('users', 'email', "TEXT NOT NULL DEFAULT ''");

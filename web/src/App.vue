@@ -18,11 +18,35 @@
     <main class="main">
       <router-view @refresh-me="() => loadMe(true)" />
     </main>
+
+    <!-- v1.12.0 手机端底栏：桌面 CSS 隐藏。四项用 <a>（不要用 button）。 -->
+    <nav class="m-nav">
+      <a v-for="n in mobileItems" :key="n.to" class="m-item" :class="{ on: isOn(n) }" :href="'#' + n.to">
+        <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" v-html="ICONS[n.ic]"></svg></span>
+        <span class="mtxt">{{ n.label }}</span>
+      </a>
+      <!-- 用户拍板：手机底栏恰好四项，管理员才多一个「更多」。
+           普通用户没有「更多」时，天气走首页快捷入口、回首页/退出在「我的」页底部。 -->
+      <button v-if="session.me?.role === 'admin' && moreItems.length" class="m-item m-more" :class="{ on: sheetOpen }" @click="sheetOpen = !sheetOpen">
+        <span class="ic">⋯</span>
+        <span class="mtxt">更多</span>
+      </button>
+    </nav>
+    <div v-if="sheetOpen" class="m-mask" @click.self="sheetOpen = false">
+      <div class="m-sheet">
+        <a v-for="n in moreItems" :key="n.to" class="m-sheet-item" :href="'#' + n.to" @click="sheetOpen = false">
+          <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" v-html="ICONS[n.ic]"></svg></span>
+          <span>{{ n.label }}</span>
+        </a>
+        <a class="m-sheet-item" href="#/" @click="sheetOpen = false"><span class="ic">⌂</span><span>回首页</span></a>
+        <a class="m-sheet-item" @click="logout(); sheetOpen = false"><span class="ic">⏻</span><span>退出登录</span></a>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api, setToken, token } from './api/index.js';
 import { session, loadMe, clearSession, navVisible } from './stores/session.js';
@@ -45,18 +69,29 @@ const ICONS = {
 // v1.10.0：城市景点库/设置/用户管理都是管理员专属（adminOnly），
 // 普通用户多一个「账号」（改昵称+密码、看自己的剩余次数与累计 token）——
 // 原来是塞在设置页里的「修改密码」页签，现在设置页只对管理员开放，就独立成页了。
+// v1.12.0 改名：【游记整理】→【生成游记】、【账号】→【我的】（只改文案，路由与 API 不动）
 const ALL_NAV = [
   { to: '/plan', label: '生成攻略', ic: 'compass', page: 'guides' },
   { to: '/history', label: '我的攻略', ic: 'book', page: 'guides' },
-  { to: '/journals', label: '游记整理', ic: 'pen', page: 'guides' }, // v1.8.0 游记整理（在「我的攻略」下方）
+  { to: '/journals', label: '生成游记', ic: 'pen', page: 'guides' }, // v1.8.0 游记整理（在「我的攻略」下方）
   { to: '/library', label: '城市景点库', ic: 'map', page: 'library', adminOnly: true },
   { to: '/weather', label: '天气', ic: 'weather', page: 'weather' },
-  { to: '/account', label: '账号', ic: 'user', always: true },
+  { to: '/account', label: '我的', ic: 'user', always: true },
   { to: '/settings', label: '设置', ic: 'sliders', page: 'settings', adminOnly: true },
   { to: '/users', label: '用户管理', ic: 'users', page: 'settings', adminOnly: true },
 ];
 
+// 手机端底栏：恰好四项（用户点名）。管理员多一个「更多」，其余页签收进浮层。
+const MOBILE_NAV = [
+  { to: '/plan', label: '生成攻略', ic: 'compass', page: 'guides' },
+  { to: '/history', label: '我的攻略', ic: 'book', page: 'guides' },
+  { to: '/journals', label: '生成游记', ic: 'pen', page: 'guides' },
+  { to: '/account', label: '我的', ic: 'user', always: true },
+];
+const sheetOpen = ref(false);
 const navItems = computed(() => ALL_NAV.filter((n) => navVisible(n)));
+const mobileItems = computed(() => MOBILE_NAV.filter((n) => navVisible(n)));
+const moreItems = computed(() => ALL_NAV.filter((n) => navVisible(n) && !MOBILE_NAV.some((m) => m.to === n.to)));
 
 function isOn(n) {
   return route.path === n.to || route.path.startsWith(n.to + '/');
@@ -74,6 +109,7 @@ onMounted(() => { loadMe(); });
 // 登录是 SPA 内跳转（不刷新页面），App 不会重新挂载——路由变化时补拉用户信息，
 // 否则从首页进任何功能页侧栏菜单都是空的
 watch(() => route.fullPath, () => {
+  sheetOpen.value = false; // 换页就收起「更多」浮层
   if (token() && !session.me) loadMe();
 });
 </script>

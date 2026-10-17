@@ -1,6 +1,7 @@
 // 系统设置（admin）：高德 Key、系统信息。AI 全局 Key 在 /ai 路由。
 const express = require('express');
 const { db, getSetting, setSetting } = require('../db');
+const { wikiSettingsJson, isBoolInput, MAX_ATTRS_LIMIT } = require('../services/wikiSettings');
 const packageJson = require('../../package.json');
 
 const r = express.Router();
@@ -45,6 +46,8 @@ r.get('/', (req, res) => {
     public_base_url: String(getSetting('public_base_url') || ''),
     upgrade_keep_backups: String(getSetting('upgrade_keep_backups') || ''),
     upgrade_keep_dist: String(getSetting('upgrade_keep_dist') || ''),
+    // v1.12.0：两家维基站点各一个开关（缺省全关）+ 批量补全阈值
+    ...wikiSettingsJson(),
   });
 });
 
@@ -87,6 +90,26 @@ r.put('/', (req, res) => {
     const b = baseUrlSetting(req.body.public_base_url);
     if (b.bad) return res.status(400).json({ error: '公开访问地址要留空，或以 http:// 或 https:// 开头的完整地址（例如 http://alleyu.in1912.cn）' });
     setSetting('public_base_url', b.val);
+  }
+  // 维基分站开关（v1.12.0）：只收布尔语义，存 '1' / ''。缺省 = 关。
+  for (const key of ['wiki_voyage_enabled', 'wiki_pedia_enabled']) {
+    if (req.body && req.body[key] !== undefined) {
+      if (!isBoolInput(req.body[key])) return res.status(400).json({ error: '维基开关只接受开/关' });
+      const on = req.body[key] === true || req.body[key] === 1 || req.body[key] === '1';
+      setSetting(key, on ? '1' : '');
+    }
+  }
+  // 批量补全阈值：留空 = 恢复默认 6；否则 0~100 的整数
+  if (req.body && req.body.backfill_max_attrs !== undefined) {
+    const s = String(req.body.backfill_max_attrs === null ? '' : req.body.backfill_max_attrs).trim();
+    if (!s) setSetting('backfill_max_attrs', '');
+    else {
+      const n = Number(s);
+      if (!Number.isInteger(n) || n < 0 || n > MAX_ATTRS_LIMIT) {
+        return res.status(400).json({ error: `补全阈值必须是 0~${MAX_ATTRS_LIMIT} 的整数（留空 = 默认 6）` });
+      }
+      setSetting('backfill_max_attrs', String(n));
+    }
   }
   res.json({ ok: true });
 });
